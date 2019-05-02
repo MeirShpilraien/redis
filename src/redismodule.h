@@ -314,6 +314,9 @@ RedisModuleString *REDISMODULE_API_FUNC(RedisModule_DictNext)(RedisModuleCtx *ct
 RedisModuleString *REDISMODULE_API_FUNC(RedisModule_DictPrev)(RedisModuleCtx *ctx, RedisModuleDictIter *di, void **dataptr);
 int REDISMODULE_API_FUNC(RedisModule_DictCompareC)(RedisModuleDictIter *di, const char *op, void *key, size_t keylen);
 int REDISMODULE_API_FUNC(RedisModule_DictCompare)(RedisModuleDictIter *di, const char *op, RedisModuleString *key);
+RedisModuleDictIter* REDISMODULE_API_FUNC(RedisModule_ScanKeys)();
+const char* REDISMODULE_API_FUNC(RedisModule_ScanKeysIteratorNext)(RedisModuleDictIter *iter);
+void REDISMODULE_API_FUNC(RedisModule_ScanKeysIteratorFree)(RedisModuleDictIter *iter);
 
 /* Experimental APIs */
 #ifdef REDISMODULE_EXPERIMENTAL_API
@@ -486,6 +489,9 @@ static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int 
     REDISMODULE_GET_API(DictPrev);
     REDISMODULE_GET_API(DictCompare);
     REDISMODULE_GET_API(DictCompareC);
+    REDISMODULE_GET_API(ScanKeys);
+    REDISMODULE_GET_API(ScanKeysIteratorNext);
+    REDISMODULE_GET_API(ScanKeysIteratorFree);
 
 #ifdef REDISMODULE_EXPERIMENTAL_API
     REDISMODULE_GET_API(GetThreadSafeContext);

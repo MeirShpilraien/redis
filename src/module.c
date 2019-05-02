@@ -4759,6 +4759,23 @@ void *RM_GetSharedAPI(RedisModuleCtx *ctx, const char *apiname) {
     return sapi->func;
 }
 
+dictIterator *RM_ScanKeys() {
+    dictIterator *iter = dictGetSafeIterator(server.db->dict);
+    return iter;
+}
+
+const char* RM_ScanKeysIteratorNext(dictIterator *iter) {
+    dictEntry *entry = dictNext(iter);
+    if(!entry){
+        return NULL;
+    }
+    return entry->key;
+}
+
+void RM_ScanKeysIteratorFree(dictIterator *iter) {
+    dictReleaseIterator(iter);
+}
+
 /* Remove all the APIs registered by the specified module. Usually you
  * want this when the module is going to be unloaded. This function
  * assumes that's caller responsibility to make sure the APIs are not
@@ -5473,4 +5490,7 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(CommandFilterArgInsert);
     REGISTER_API(CommandFilterArgReplace);
     REGISTER_API(CommandFilterArgDelete);
+    REGISTER_API(ScanKeys);
+    REGISTER_API(ScanKeysIteratorNext);
+    REGISTER_API(ScanKeysIteratorFree);
 }
