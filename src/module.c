@@ -5079,8 +5079,8 @@ int RM_GetMaxMemory(){
     return server.maxmemory;
 }
 
-size_t RM_GetPtrSize(void* ptr){
-    return zptrsize(ptr);
+size_t RM_MallocSize(void* ptr){
+    return zmalloc_size(ptr);
 }
 
 /* --------------------------------------------------------------------------
@@ -5548,5 +5548,5 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(CommandFilterArgDelete);
     REGISTER_API(GetUsedMemory);
     REGISTER_API(GetMaxMemory);
-    REGISTER_API(GetPtrSize);
+    REGISTER_API(MallocSize);
 }

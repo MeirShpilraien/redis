@@ -368,7 +368,7 @@ int REDISMODULE_API_FUNC(RedisModule_CommandFilterArgReplace)(RedisModuleCommand
 int REDISMODULE_API_FUNC(RedisModule_CommandFilterArgDelete)(RedisModuleCommandFilterCtx *fctx, int pos);
 size_t REDISMODULE_API_FUNC(RedisModule_GetUsedMemory)();
 unsigned long long REDISMODULE_API_FUNC(RedisModule_GetMaxMemory)();
-size_t REDISMODULE_API_FUNC(RedisModule_GetPtrSize)(void* ptr);
+size_t REDISMODULE_API_FUNC(RedisModule_MallocSize)(void* ptr);
 #endif
 
 /* This is included inline inside each Redis module. */
@@ -542,7 +542,7 @@ static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int 
     REDISMODULE_GET_API(CommandFilterArgDelete);
     REDISMODULE_GET_API(GetUsedMemory);
     REDISMODULE_GET_API(GetMaxMemory);
-    REDISMODULE_GET_API(GetPtrSize);
+    REDISMODULE_GET_API(MallocSize);
     #endif
 
     if (RedisModule_IsModuleNameBusy && RedisModule_IsModuleNameBusy(name)) return REDISMODULE_ERR;

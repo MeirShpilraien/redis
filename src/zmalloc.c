@@ -209,10 +209,6 @@ void zfree(void *ptr) {
 #endif
 }
 
-size_t zptrsize(void* ptr){
-    return zmalloc_size(ptr);
-}
-
 char *zstrdup(const char *s) {
     size_t l = strlen(s)+1;
     char *p = zmalloc(l);
