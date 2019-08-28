@@ -5071,6 +5071,18 @@ int RM_CommandFilterArgDelete(RedisModuleCommandFilterCtx *fctx, int pos)
     return REDISMODULE_OK;
 }
 
+int RM_GetUsedMemory(){
+    return zmalloc_used_memory();
+}
+
+int RM_GetMaxMemory(){
+    return server.maxmemory;
+}
+
+size_t RM_GetPtrSize(void* ptr){
+    return zptrsize(ptr);
+}
+
 /* --------------------------------------------------------------------------
  * Modules API internals
  * -------------------------------------------------------------------------- */
@@ -5534,4 +5546,7 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(CommandFilterArgInsert);
     REGISTER_API(CommandFilterArgReplace);
     REGISTER_API(CommandFilterArgDelete);
+    REGISTER_API(GetUsedMemory);
+    REGISTER_API(GetMaxMemory);
+    REGISTER_API(GetPtrSize);
 }
