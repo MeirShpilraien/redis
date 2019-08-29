@@ -541,7 +541,7 @@ static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int 
     REDISMODULE_GET_API(CommandFilterArgDelete);
     REDISMODULE_GET_API(GetUsedMemoryPercentage);
     REDISMODULE_GET_API(MallocSize);
-    #endif
+#endif
 
     if (RedisModule_IsModuleNameBusy && RedisModule_IsModuleNameBusy(name)) return REDISMODULE_ERR;
     RedisModule_SetModuleAttribs(ctx,name,ver,apiver);
