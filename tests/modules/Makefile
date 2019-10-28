@@ -17,7 +17,8 @@ TEST_MODULES = \
     fork.so \
     infotest.so \
     propagate.so \
-    hooks.so
+    hooks.so \
+    scan.so
 
 .PHONY: all
 

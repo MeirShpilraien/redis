@@ -5629,13 +5629,11 @@ int RM_CommandFilterArgDelete(RedisModuleCommandFilterCtx *fctx, int pos)
  *
  * The keyname is owned by the caller and need to be retained if used after this function.
  *
- * The kp is the key data and given using the best efforts approach, in some cases it might
+ * The kp is the data and provide using the best efforts approach, in some cases it might
  * not be available (in such case it will be set to NULL) and it is the user responsibility
- * to handle it. The key is opened for READ access.
+ * to handle it.
  *
- * The kp (if given) is owned by the user and need to be free by him. If automemory is set
- * on the context used to initiate the scan then the kp will be free when the context will
- * be free
+ * The kp (if given) is owned by the caller and will be free when the callback returns
  *
  */
 typedef void (*RedisModuleScanCB)(void *privdata, RedisModuleString* keyname, RedisModuleKey* key);
@@ -5650,56 +5648,82 @@ typedef struct RedisModuleCursor{
     int cursor;
 }RedisModuleCursor;
 
-void RM_ScanCallback(void *privdata, const dictEntry *de) {
+void ScanCallback(void *privdata, const dictEntry *de) {
     ScanCBData *data = privdata;
     sds key = dictGetKey(de);
     robj* val = dictGetVal(de);
     RedisModuleString *keyname = createObject(OBJ_STRING,sdsdup(key));
 
     /* Setup the key handle. */
-    RedisModuleKey* kp = zmalloc(sizeof(*kp));
-    kp->ctx = data->ctx;
-    kp->db = data->ctx->client->db;
-    kp->key = keyname;
-    incrRefCount(keyname);
-    kp->value = val;
-    kp->iter = NULL;
-    kp->mode = REDISMODULE_READ;
-    zsetKeyReset(kp);
-    autoMemoryAdd(data->ctx,REDISMODULE_AM_KEY,kp);
+    RedisModuleKey kp = {0};
+    kp.ctx = data->ctx;
+    kp.db = data->ctx->client->db;
+    kp.key = keyname;
+    kp.value = val;
+    kp.iter = NULL;
+    kp.mode = REDISMODULE_READ;
+    zsetKeyReset(&kp);
 
-    data->fn(data->user_data, keyname, kp);
+    data->fn(data->user_data, keyname, &kp);
     decrRefCount(keyname);
+}
+
+/**
+ * Create a new cursor to scan keys.
+ */
+RedisModuleCursor* RM_CursorCreate() {
+    RedisModuleCursor* cursor = zmalloc(sizeof(*cursor));
+    cursor->cursor = 0;
+    return cursor;
+}
+
+/**
+ * Restart an existing cursor. The keys will be rescanned.
+ */
+void RM_CursorRestart(RedisModuleCursor* cursor) {
+    cursor->cursor = 0;
+}
+
+/**
+ * Destroy the cursor struct.
+ */
+void RM_CursorDestroy(RedisModuleCursor* cursor) {
+    zfree(cursor);
 }
 
 /**
  * Scan api that allows module writer to scan all the keys and value in redis.
  * The way it should be used:
- *      Cursor c = NULL;
- *      while((c = RM_Scan(ctx, c, callback, privateData)));
+ *      Cursor* c = RM_CursorCreate();
+ *      while(RM_Scan(ctx, c, callback, privateData));
+ *      RM_CursorDestroy(c);
  *
  * It is also possible to use this api from another thread such that the GIL only have to
  * be acquired durring the actuall call to RM_Scan:
- *      Cursor c = NULL;
+ *      Cursor* c = RM_CursorCreate();
  *      RM_ThreadSafeCtxLock(ctx);
- *      while((c = RM_Scan(ctx, c, callback, privateData))){
+ *      while(RM_Scan(ctx, c, callback, privateData)){
  *          RM_ThreadSafeCtxUnlock(ctx);
  *          // do some background job
  *          RM_ThreadSafeCtxLock(ctx);
  *      }
+ *      RM_CursorDestroy(c);
+ *
+ *  The function will return 1 if there is more elements to scan and 0 otherwise.
+ *  It is also possible to restart and existing cursor using RM_CursorRestart
  */
-RedisModuleCursor* RM_Scan(RedisModuleCtx *ctx, RedisModuleCursor* cursor, RedisModuleScanCB fn, void* privdata) {
-    if(!cursor){
-        cursor = zmalloc(sizeof(*cursor));
-        cursor->cursor = 0;
+int RM_Scan(RedisModuleCtx *ctx, RedisModuleCursor* cursor, RedisModuleScanCB fn, void* privdata) {
+    if(cursor->cursor == -1){
+        return 0;
     }
+    int ret = 1;
     ScanCBData data = { ctx, privdata, fn };
-    cursor->cursor = dictScan(ctx->client->db->dict, cursor->cursor, RM_ScanCallback, NULL, &data);
+    cursor->cursor = dictScan(ctx->client->db->dict, cursor->cursor, ScanCallback, NULL, &data);
     if (cursor->cursor == 0){
-        zfree(cursor);
-        cursor = NULL;
+        cursor->cursor = -1;
+        ret = 0;
     }
-    return cursor;
+    return ret;
 }
 
 
@@ -6648,4 +6672,7 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(GetClientInfoById);
     REGISTER_API(SubscribeToServerEvent);
     REGISTER_API(Scan);
+    REGISTER_API(CursorCreate);
+    REGISTER_API(CursorDestroy);
+    REGISTER_API(CursorRestart);
 }
