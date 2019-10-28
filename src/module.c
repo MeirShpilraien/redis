@@ -5699,20 +5699,20 @@ void RM_CursorDestroy(RedisModuleCursor* cursor) {
 /**
  * Scan api that allows module writer to scan all the keys and value in redis.
  * The way it should be used:
- *      Cursor* c = RM_CursorCreate();
- *      while(RM_Scan(ctx, c, callback, privateData));
- *      RM_CursorDestroy(c);
+ *      Cursor* c = RedisModule_CursorCreate();
+ *      while(RedisModule_Scan(ctx, c, callback, privateData));
+ *      RedisModule_CursorDestroy(c);
  *
  * It is also possible to use this api from another thread such that the GIL only have to
  * be acquired durring the actuall call to RM_Scan:
- *      Cursor* c = RM_CursorCreate();
- *      RM_ThreadSafeCtxLock(ctx);
- *      while(RM_Scan(ctx, c, callback, privateData)){
- *          RM_ThreadSafeCtxUnlock(ctx);
+ *      Cursor* c = RedisModule_CursorCreate();
+ *      RedisModule_ThreadSafeCtxLock(ctx);
+ *      while(RedisModule_Scan(ctx, c, callback, privateData)){
+ *          RedisModule_ThreadSafeCtxUnlock(ctx);
  *          // do some background job
- *          RM_ThreadSafeCtxLock(ctx);
+ *          RedisModule_ThreadSafeCtxLock(ctx);
  *      }
- *      RM_CursorDestroy(c);
+ *      RedisModule_CursorDestroy(c);
  *
  *  The function will return 1 if there is more elements to scan and 0 otherwise.
  *  It is also possible to restart and existing cursor using RM_CursorRestart
