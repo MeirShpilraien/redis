@@ -1799,6 +1799,17 @@ int RM_SelectDb(RedisModuleCtx *ctx, int newid) {
     return (retval == C_OK) ? REDISMODULE_OK : REDISMODULE_ERR;
 }
 
+static void initializeKey(RedisModuleKey *kp, RedisModuleCtx *ctx, robj *keyname, robj *value, int mode){
+    kp->ctx = ctx;
+    kp->db = ctx->client->db;
+    kp->key = keyname;
+    incrRefCount(keyname);
+    kp->value = value;
+    kp->iter = NULL;
+    kp->mode = mode;
+    zsetKeyReset(kp);
+}
+
 /* Return an handle representing a Redis key, so that it is possible
  * to call other APIs with the key handle as argument to perform
  * operations on the key.
@@ -1828,25 +1839,22 @@ void *RM_OpenKey(RedisModuleCtx *ctx, robj *keyname, int mode) {
 
     /* Setup the key handle. */
     kp = zmalloc(sizeof(*kp));
-    kp->ctx = ctx;
-    kp->db = ctx->client->db;
-    kp->key = keyname;
-    incrRefCount(keyname);
-    kp->value = value;
-    kp->iter = NULL;
-    kp->mode = mode;
-    zsetKeyReset(kp);
+    initializeKey(kp, ctx, keyname, value, mode);
     autoMemoryAdd(ctx,REDISMODULE_AM_KEY,kp);
     return (void*)kp;
+}
+
+static void closeKeyInternal(RedisModuleKey *key) {
+    if (key->mode & REDISMODULE_WRITE) signalModifiedKey(key->db,key->key);
+    /* TODO: if (key->iter) RM_KeyIteratorStop(kp); */
+    RM_ZsetRangeStop(key);
+    decrRefCount(key->key);
 }
 
 /* Close a key handle. */
 void RM_CloseKey(RedisModuleKey *key) {
     if (key == NULL) return;
-    if (key->mode & REDISMODULE_WRITE) signalModifiedKey(key->db,key->key);
-    /* TODO: if (key->iter) RM_KeyIteratorStop(kp); */
-    RM_ZsetRangeStop(key);
-    decrRefCount(key->key);
+    closeKeyInternal(key);
     autoMemoryFreed(key->ctx,REDISMODULE_AM_KEY,key);
     zfree(key);
 }
@@ -5657,15 +5665,11 @@ void ScanCallback(void *privdata, const dictEntry *de) {
 
     /* Setup the key handle. */
     RedisModuleKey kp = {0};
-    kp.ctx = data->ctx;
-    kp.db = data->ctx->client->db;
-    kp.key = keyname;
-    kp.value = val;
-    kp.iter = NULL;
-    kp.mode = REDISMODULE_READ;
-    zsetKeyReset(&kp);
+    initializeKey(&kp, data->ctx, keyname, val, REDISMODULE_READ);
 
     data->fn(data->user_data, keyname, &kp);
+
+    closeKeyInternal(&kp);
     decrRefCount(keyname);
 }
 
