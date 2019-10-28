@@ -4272,6 +4272,7 @@ RedisModuleCtx *RM_GetThreadSafeContext(RedisModuleBlockedClient *bc) {
      * access it safely from another thread, so we create a fake client here
      * in order to keep things like the currently selected database and similar
      * things. */
+    ctx->client = createClient(NULL);
     if (bc) {
         selectDb(ctx->client,bc->dbid);
         ctx->client->id = bc->client->id;
