@@ -327,10 +327,10 @@ ifneq ($(strip $(PREV_FINAL_LDFLAGS)), $(strip $(FINAL_LDFLAGS)))
 endif
 
 lib_lua_latest:
-	make -C $(LIB_LUA_LATEST_DIR)
+	make -C $(LIB_LUA_LATEST_DIR) CFLAGS="$(FINAL_CFLAGS)"
 
 lib_lua_legacy:
-	make -C $(LIB_LUA_LEGACY_DIR)
+	make -C $(LIB_LUA_LEGACY_DIR) CFLAGS="$(FINAL_CFLAGS)"
 
 # redis-server
 $(REDIS_SERVER_NAME): $(REDIS_SERVER_OBJ) lib_lua_latest lib_lua_legacy
