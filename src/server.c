@@ -4466,7 +4466,7 @@ sds genRedisInfoString(const char *section) {
             "allocator_resident:%zu\r\n"
             "total_system_memory:%lu\r\n"
             "total_system_memory_human:%s\r\n"
-            "used_memory_lua:%lld\r\n"
+            "used_memory_lua:%d\r\n"
             "used_memory_lua_human:%s\r\n"
             "used_memory_scripts:%lld\r\n"
             "used_memory_scripts_human:%s\r\n"
