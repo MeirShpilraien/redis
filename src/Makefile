@@ -84,6 +84,7 @@ endif
 -include .make-settings
 
 FINAL_CFLAGS=$(STD) $(WARN) $(OPT) $(DEBUG) $(CFLAGS) $(REDIS_CFLAGS)
+LUA_CFLAGS=$(STD) $(WARN) $(OPT) $(DEBUG) $(CFLAGS) $(REDIS_CFLAGS)
 FINAL_LDFLAGS=$(LDFLAGS) $(REDIS_LDFLAGS) $(DEBUG)
 FINAL_LIBS=-lm
 DEBUG=-g -ggdb
@@ -327,10 +328,10 @@ ifneq ($(strip $(PREV_FINAL_LDFLAGS)), $(strip $(FINAL_LDFLAGS)))
 endif
 
 lib_lua_latest:
-	make -C $(LIB_LUA_LATEST_DIR) CFLAGS="$(FINAL_CFLAGS)"
+	make -C $(LIB_LUA_LATEST_DIR) LUA_CFLAGS="$(LUA_CFLAGS)"
 
 lib_lua_legacy:
-	make -C $(LIB_LUA_LEGACY_DIR) CFLAGS="$(FINAL_CFLAGS)"
+	make -C $(LIB_LUA_LEGACY_DIR) LUA_CFLAGS="$(LUA_CFLAGS)"
 
 # redis-server
 $(REDIS_SERVER_NAME): $(REDIS_SERVER_OBJ) lib_lua_latest lib_lua_legacy

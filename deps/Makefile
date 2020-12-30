@@ -36,6 +36,7 @@ distclean:
 	-(cd hiredis && $(MAKE) clean) > /dev/null || true
 	-(cd linenoise && $(MAKE) clean) > /dev/null || true
 	-(cd lua && $(MAKE) clean) > /dev/null || true
+	-(cd lua-5.4.2 && $(MAKE) clean) > /dev/null || true
 	-(cd jemalloc && [ -f Makefile ] && $(MAKE) distclean) > /dev/null || true
 	-(cd hdr_histogram && $(MAKE) clean) > /dev/null || true
 	-(rm -f .make-*)
@@ -70,6 +71,9 @@ ifeq ($(uname_S),SunOS)
 endif
 
 LUA_CFLAGS+= -g -O0 -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DREDIS_STATIC='' -fvisibility=hidden -DLUA_USE_MKSTEMP $(CFLAGS)
+ifneq ($(findstring -m32,$(CFLAGS)),)
+	LUA_CFLAGS+= -fno-pic
+endif
 LUA_LDFLAGS+= $(LDFLAGS)
 # lua's Makefile defines AR="ar rcu", which is unusual, and makes it more
 # challenging to cross-compile lua (and redis).  These defines make it easier
