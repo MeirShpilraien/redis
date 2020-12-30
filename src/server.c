@@ -875,11 +875,15 @@ struct redisCommand redisCommandTable[] = {
 
     /* EVAL can modify the dataset, however it is not flagged as a write
      * command since we do the check while running commands from Lua. */
-    {"eval",evalCommand,-3,
+    {"eval",evalCommandLegacy,-3,
      "no-script @scripting",
      0,evalGetKeys,0,0,0,0,0,0},
 
-    {"evalsha",evalShaCommand,-3,
+     {"evalnew",evalCommand,-3,
+      "no-script @scripting",
+      0,evalGetKeys,0,0,0,0,0,0},
+
+    {"evalsha",evalShaCommandLegacy,-3,
      "no-script @scripting",
      0,evalGetKeys,0,0,0,0,0,0},
 
@@ -887,7 +891,7 @@ struct redisCommand redisCommandTable[] = {
      "admin random ok-loading ok-stale",
      0,NULL,0,0,0,0,0,0},
 
-    {"script",scriptCommand,-2,
+    {"script",scriptCommandLegacy,-2,
      "no-script @scripting",
      0,NULL,0,0,0,0,0,0},
 
@@ -1893,7 +1897,7 @@ void checkChildrenDone(void) {
             ModuleForkDoneHandler(exitcode,bysignal);
             if (!bysignal && exitcode == 0) receiveChildInfo();
         } else {
-            if (!ldbRemoveChild(pid)) {
+            if (!ldbRemoveChildLegacy(pid)) {
                 serverLog(LL_WARNING,
                     "Warning, detected child with unmatched pid: %ld",
                     (long)pid);
@@ -1932,8 +1936,8 @@ void cronUpdateMemoryStats() {
             /* LUA memory isn't part of zmalloc_used, but it is part of the process RSS,
              * so we must deduct it in order to be able to calculate correct
              * "allocator fragmentation" ratio */
-            size_t lua_memory = lua_gc(server.lua,LUA_GCCOUNT,0)*1024LL;
-            server.cron_malloc_stats.allocator_resident = server.cron_malloc_stats.process_rss - lua_memory;
+//            size_t lua_memory = lua_gc(server.lua,LUA_GCCOUNT,0)*1024LL;
+//            server.cron_malloc_stats.allocator_resident = server.cron_malloc_stats.process_rss - lua_memory;
         }
         if (!server.cron_malloc_stats.allocator_active)
             server.cron_malloc_stats.allocator_active = server.cron_malloc_stats.allocator_resident;
@@ -2067,7 +2071,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     }
 
     /* Check if a background saving or AOF rewrite in progress terminated. */
-    if (hasActiveChildProcess() || ldbPendingChildren())
+    if (hasActiveChildProcess() || ldbPendingChildrenLegacy())
     {
         checkChildrenDone();
     } else {
@@ -3177,6 +3181,7 @@ void initServer(void) {
 
     if (server.cluster_enabled) clusterInit();
     replicationScriptCacheInit();
+    scriptingInitLegacy(1);
     scriptingInit(1);
     slowlogInit();
     latencyMonitorInit();
@@ -3842,7 +3847,7 @@ int processCommand(client *c) {
         /* Save out_of_memory result at script start, otherwise if we check OOM
          * until first write within script, memory used by lua stack and
          * arguments might interfere. */
-        if (c->cmd->proc == evalCommand || c->cmd->proc == evalShaCommand) {
+        if (c->cmd->proc == evalCommandLegacy || c->cmd->proc == evalShaCommandLegacy) {
             server.lua_oom = out_of_memory;
         }
     }
@@ -3940,7 +3945,7 @@ int processCommand(client *c) {
         !(c->cmd->proc == shutdownCommand &&
           c->argc == 2 &&
           tolower(((char*)c->argv[1]->ptr)[0]) == 'n') &&
-        !(c->cmd->proc == scriptCommand &&
+        !(c->cmd->proc == scriptCommandLegacy &&
           c->argc == 2 &&
           tolower(((char*)c->argv[1]->ptr)[0]) == 'k'))
     {
@@ -4001,7 +4006,7 @@ int prepareForShutdown(int flags) {
         redisCommunicateSystemd("STOPPING=1\n");
 
     /* Kill all the Lua debugger forked sessions. */
-    ldbKillForkedSessions();
+    ldbKillForkedSessionsLegacy();
 
     /* Kill the saving child if there is a background saving in progress.
        We want to avoid race conditions, for instance our saving child may
@@ -4424,7 +4429,7 @@ sds genRedisInfoString(const char *section) {
         size_t zmalloc_used = zmalloc_used_memory();
         size_t total_system_mem = server.system_memory_size;
         const char *evict_policy = evictPolicyToString();
-        long long memory_lua = server.lua ? (long long)lua_gc(server.lua,LUA_GCCOUNT,0)*1024 : 0;
+//        long long memory_lua = server.lua ? (long long)lua_gc(server.lua,LUA_GCCOUNT,0)*1024 : 0;
         struct redisMemOverhead *mh = getMemoryOverheadData();
 
         /* Peak memory is updated from time to time by serverCron() so it
@@ -4437,7 +4442,7 @@ sds genRedisInfoString(const char *section) {
         bytesToHuman(hmem,zmalloc_used);
         bytesToHuman(peak_hmem,server.stat_peak_memory);
         bytesToHuman(total_system_hmem,total_system_mem);
-        bytesToHuman(used_memory_lua_hmem,memory_lua);
+//        bytesToHuman(used_memory_lua_hmem,memory_lua);
         bytesToHuman(used_memory_scripts_hmem,mh->lua_caches);
         bytesToHuman(used_memory_rss_hmem,server.cron_malloc_stats.process_rss);
         bytesToHuman(maxmemory_hmem,server.maxmemory);
@@ -4502,7 +4507,7 @@ sds genRedisInfoString(const char *section) {
             server.cron_malloc_stats.allocator_resident,
             (unsigned long)total_system_mem,
             total_system_hmem,
-            memory_lua,
+            0,
             used_memory_lua_hmem,
             (long long) mh->lua_caches,
             used_memory_scripts_hmem,

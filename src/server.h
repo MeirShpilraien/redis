@@ -1496,6 +1496,7 @@ struct redisServer {
     int cluster_config_file_lock_fd;   /* cluster config fd, will be flock */
     /* Scripting */
     lua_State *lua; /* The Lua interpreter. We use just one for all clients */
+    lua_State *luaLetest; /* The Lua interpreter. We use just one for all clients */
     client *lua_client;   /* The "fake client" to query Redis from Lua */
     client *lua_caller;   /* The client running EVAL right now, or NULL */
     char* lua_cur_script; /* SHA1 of the script currently running, or NULL */
@@ -2316,11 +2317,12 @@ int redis_check_rdb_main(int argc, char **argv, FILE *fp);
 int redis_check_aof_main(int argc, char **argv);
 
 /* Scripting */
+void scriptingInitLegacy(int setup);
 void scriptingInit(int setup);
-int ldbRemoveChild(pid_t pid);
-void ldbKillForkedSessions(void);
-int ldbPendingChildren(void);
-sds luaCreateFunction(client *c, lua_State *lua, robj *body);
+int ldbRemoveChildLegacy(pid_t pid);
+void ldbKillForkedSessionsLegacy(void);
+int ldbPendingChildrenLegacy(void);
+sds luaCreateFunctionLegacy(client *c, lua_State *lua, robj *body);
 
 /* Blocked clients */
 void processUnblockedClients(void);
@@ -2539,6 +2541,9 @@ void helloCommand(client *c);
 void evalCommand(client *c);
 void evalShaCommand(client *c);
 void scriptCommand(client *c);
+void evalCommandLegacy(client *c);
+void evalShaCommandLegacy(client *c);
+void scriptCommandLegacy(client *c);
 void timeCommand(client *c);
 void bitopCommand(client *c);
 void bitcountCommand(client *c);

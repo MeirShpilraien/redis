@@ -2431,7 +2431,7 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
                 if (rsi) rsi->repl_offset = strtoll(auxval->ptr,NULL,10);
             } else if (!strcasecmp(auxkey->ptr,"lua")) {
                 /* Load the script back in memory. */
-                if (luaCreateFunction(NULL,server.lua,auxval) == NULL) {
+                if (luaCreateFunctionLegacy(NULL,server.lua,auxval) == NULL) {
                     rdbReportCorruptRDB(
                         "Can't load Lua script from RDB file! "
                         "BODY: %s", (char*)auxval->ptr);

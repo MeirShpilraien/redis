@@ -27,16 +27,18 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "server.h"
-#include "sha1.h"
-#include "rand.h"
-#include "cluster.h"
+#include "../server.h"
+#include "../sha1.h"
+#include "../rand.h"
+#include "../cluster.h"
 
 #include <lua.h>
 #include <lauxlib.h>
 #include <lualib.h>
 #include <ctype.h>
 #include <math.h>
+
+#define PUBLIC __attribute__ ((visibility ("default")))
 
 char *redisProtocolToLuaType_Int(lua_State *lua, char *reply);
 char *redisProtocolToLuaType_Bulk(lua_State *lua, char *reply);
@@ -343,7 +345,7 @@ void luaReplyToRedisReply(client *c, lua_State *lua) {
 
     switch(t) {
     case LUA_TSTRING:
-        addReplyBulkCBuffer(c,(char*)lua_tostring(lua,-1),lua_strlen(lua,-1));
+        addReplyBulkCBuffer(c,(char*)lua_tostring(lua,-1),lua_rawlen(lua,-1));
         break;
     case LUA_TBOOLEAN:
         if (server.lua_client->resp == 2)
@@ -1019,21 +1021,41 @@ void luaLoadLib(lua_State *lua, const char *libname, lua_CFunction luafunc) {
   lua_call(lua, 1, 0);
 }
 
-LUALIB_API int (luaopen_cjson) (lua_State *L);
-LUALIB_API int (luaopen_struct) (lua_State *L);
-LUALIB_API int (luaopen_cmsgpack) (lua_State *L);
-LUALIB_API int (luaopen_bit) (lua_State *L);
+//LUALIB_API int (luaopen_cjson) (lua_State *L);
+//LUALIB_API int (luaopen_struct) (lua_State *L);
+//LUALIB_API int (luaopen_cmsgpack) (lua_State *L);
+//LUALIB_API int (luaopen_bit) (lua_State *L);
+
+static const luaL_Reg libs[] = {
+  {LUA_GNAME, luaopen_base},
+//  {LUA_LOADLIBNAME, luaopen_package},
+//  {LUA_COLIBNAME, luaopen_coroutine},
+  {LUA_TABLIBNAME, luaopen_table},
+//  {LUA_IOLIBNAME, luaopen_io},
+//  {LUA_OSLIBNAME, luaopen_os},
+  {LUA_STRLIBNAME, luaopen_string},
+  {LUA_MATHLIBNAME, luaopen_math},
+//  {LUA_UTF8LIBNAME, luaopen_utf8},
+  {LUA_DBLIBNAME, luaopen_debug},
+  {NULL, NULL}
+};
 
 void luaLoadLibraries(lua_State *lua) {
-    luaLoadLib(lua, "", luaopen_base);
-    luaLoadLib(lua, LUA_TABLIBNAME, luaopen_table);
-    luaLoadLib(lua, LUA_STRLIBNAME, luaopen_string);
-    luaLoadLib(lua, LUA_MATHLIBNAME, luaopen_math);
-    luaLoadLib(lua, LUA_DBLIBNAME, luaopen_debug);
-    luaLoadLib(lua, "cjson", luaopen_cjson);
-    luaLoadLib(lua, "struct", luaopen_struct);
-    luaLoadLib(lua, "cmsgpack", luaopen_cmsgpack);
-    luaLoadLib(lua, "bit", luaopen_bit);
+    const luaL_Reg *currLib;
+    /* "require" functions from 'loadedlibs' and set results to global table */
+    for (currLib = libs; currLib->func; currLib++) {
+        luaL_requiref(lua, currLib->name, currLib->func, 1);
+        lua_pop(lua, 1);  /* remove lib */
+    }
+
+//    luaLoadLib(lua, LUA_TABLIBNAME, luaopen_table);
+//    luaLoadLib(lua, LUA_STRLIBNAME, luaopen_string);
+//    luaLoadLib(lua, LUA_MATHLIBNAME, luaopen_math);
+//    luaLoadLib(lua, LUA_DBLIBNAME, luaopen_debug);
+//    luaLoadLib(lua, "cjson", luaopen_cjson);
+//    luaLoadLib(lua, "struct", luaopen_struct);
+//    luaLoadLib(lua, "cmsgpack", luaopen_cmsgpack);
+//    luaLoadLib(lua, "bit", luaopen_bit);
 
 #if 0 /* Stuff that we don't load currently, for sandboxing concerns. */
     luaLoadLib(lua, LUA_LOADLIBNAME, luaopen_package);
@@ -1099,8 +1121,8 @@ void scriptingEnableGlobalsProtection(lua_State *lua) {
  * in order to reset the Lua scripting environment.
  *
  * However it is simpler to just call scriptingReset() that does just that. */
-void scriptingInit(int setup) {
-    lua_State *lua = lua_open();
+void PUBLIC scriptingInit(int setup) {
+    lua_State *lua = luaL_newstate();
 
     if (setup) {
         server.lua_client = NULL;
@@ -1277,7 +1299,7 @@ void scriptingInit(int setup) {
      * to global variables. */
     scriptingEnableGlobalsProtection(lua);
 
-    server.lua = lua;
+    server.luaLetest = lua;
 }
 
 /* Release resources related to Lua scripting.
@@ -1285,7 +1307,7 @@ void scriptingInit(int setup) {
 void scriptingRelease(void) {
     dictRelease(server.lua_scripts);
     server.lua_scripts_mem = 0;
-    lua_close(server.lua);
+    lua_close(server.luaLetest);
 }
 
 void scriptingReset(void) {
@@ -1327,14 +1349,14 @@ int redis_math_random (lua_State *L) {
       break;
     }
     case 1: {  /* only upper limit */
-      int u = luaL_checkint(L, 1);
+      int u = luaL_checkinteger(L, 1);
       luaL_argcheck(L, 1<=u, 1, "interval is empty");
       lua_pushnumber(L, floor(r*u)+1);  /* int between 1 and `u' */
       break;
     }
     case 2: {  /* lower and upper limits */
-      int l = luaL_checkint(L, 1);
-      int u = luaL_checkint(L, 2);
+      int l = luaL_checkinteger(L, 1);
+      int u = luaL_checkinteger(L, 2);
       luaL_argcheck(L, l<=u, 2, "interval is empty");
       lua_pushnumber(L, floor(r*(u-l+1))+l);  /* int between `l' and `u' */
       break;
@@ -1345,7 +1367,7 @@ int redis_math_random (lua_State *L) {
 }
 
 int redis_math_randomseed (lua_State *L) {
-  redisSrand48(luaL_checkint(L, 1));
+  redisSrand48(luaL_checkinteger(L, 1));
   return 0;
 }
 
@@ -1370,7 +1392,7 @@ int redis_math_randomseed (lua_State *L) {
  *
  * If 'c' is not NULL, on error the client is informed with an appropriate
  * error describing the nature of the problem and the Lua interpreter error. */
-sds luaCreateFunction(client *c, lua_State *lua, robj *body) {
+sds PUBLIC luaCreateFunction(client *c, lua_State *lua, robj *body) {
     char funcname[43];
     dictEntry *de;
 
@@ -1472,7 +1494,7 @@ void resetLuaClient(void) {
 }
 
 void evalGenericCommand(client *c, int evalsha) {
-    lua_State *lua = server.lua;
+    lua_State *lua = server.luaLetest;
     char funcname[43];
     long long numkeys;
     long long initial_server_dirty = server.dirty;
@@ -1575,7 +1597,7 @@ void evalGenericCommand(client *c, int evalsha) {
         lua_sethook(lua,luaMaskCountHook,LUA_MASKCOUNT,100000);
         delhook = 1;
     } else if (ldb.active) {
-        lua_sethook(server.lua,luaLdbLineHook,LUA_MASKLINE|LUA_MASKCOUNT,100000);
+        lua_sethook(server.luaLetest,luaLdbLineHook,LUA_MASKLINE|LUA_MASKCOUNT,100000);
         delhook = 1;
     }
 
@@ -1680,14 +1702,14 @@ void evalGenericCommand(client *c, int evalsha) {
     server.in_eval = 0;
 }
 
-void evalCommand(client *c) {
+void PUBLIC evalCommand(client *c) {
     if (!(c->flags & CLIENT_LUA_DEBUG))
         evalGenericCommand(c,0);
     else
         evalGenericCommandWithDebugging(c,0);
 }
 
-void evalShaCommand(client *c) {
+void PUBLIC evalShaCommand(client *c) {
     if (sdslen(c->argv[1]->ptr) != 40) {
         /* We know that a match is not possible if the provided SHA is
          * not the right length. So we return an error ASAP, this way
@@ -1704,7 +1726,7 @@ void evalShaCommand(client *c) {
     }
 }
 
-void scriptCommand(client *c) {
+void PUBLIC scriptCommand(client *c) {
     if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"help")) {
         const char *help[] = {
 "DEBUG (yes|sync|no) -- Set the debug mode for subsequent scripts executed.",
@@ -1731,7 +1753,7 @@ NULL
                 addReply(c,shared.czero);
         }
     } else if (c->argc == 3 && !strcasecmp(c->argv[1]->ptr,"load")) {
-        sds sha = luaCreateFunction(c,server.lua,c->argv[2]);
+        sds sha = luaCreateFunction(c,server.luaLetest,c->argv[2]);
         if (sha == NULL) return; /* The error was sent by luaCreateFunction(). */
         addReplyBulkCBuffer(c,sha,40);
         forceCommandPropagation(c,PROPAGATE_REPL|PROPAGATE_AOF);
@@ -1958,7 +1980,7 @@ void ldbEndSession(client *c) {
 /* If the specified pid is among the list of children spawned for
  * forked debugging sessions, it is removed from the children list.
  * If the pid was found non-zero is returned. */
-int ldbRemoveChild(pid_t pid) {
+int PUBLIC ldbRemoveChild(pid_t pid) {
     listNode *ln = listSearchKey(ldb.children,(void*)(unsigned long)pid);
     if (ln) {
         listDelNode(ldb.children,ln);
@@ -1969,12 +1991,12 @@ int ldbRemoveChild(pid_t pid) {
 
 /* Return the number of children we still did not receive termination
  * acknowledge via wait() in the parent process. */
-int ldbPendingChildren(void) {
+int PUBLIC ldbPendingChildren(void) {
     return listLength(ldb.children);
 }
 
 /* Kill all the forked sessions. */
-void ldbKillForkedSessions(void) {
+void PUBLIC ldbKillForkedSessions(void) {
     listIter li;
     listNode *ln;
 
