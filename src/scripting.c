@@ -27,10 +27,10 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "../server.h"
-#include "../sha1.h"
-#include "../rand.h"
-#include "../cluster.h"
+#include "server.h"
+#include "sha1.h"
+#include "rand.h"
+#include "cluster.h"
 
 #include <lua.h>
 #include <lauxlib.h>
@@ -53,11 +53,20 @@ int redis_math_randomseed (lua_State *L);
 void ldbInit(void);
 void ldbDisable(client *c);
 void ldbEnable(client *c);
-void evalGenericCommandWithDebugging(client *c, int evalsha);
+void evalGenericCommandWithDebugging(client *c, redisLua *lua, int evalsha, int scriptPos);
 void luaLdbLineHook(lua_State *lua, lua_Debug *ar);
 void ldbLog(sds entry);
 void ldbLogRedisReply(char *reply);
 sds ldbCatStackValue(sds s, lua_State *lua, int idx);
+
+sds luaCreateFunction(redisLua *lua, client *c, robj *body);
+void ldbKillForkedSessions(redisLua* l);
+int ldbPendingChildren(redisLua* l);
+int ldbRemoveChild(redisLua* lua, pid_t pid);
+void scriptEvalShaCommand(redisLua *lua, client *c, int scriptPos);
+void scriptEvalCommand(redisLua *lua, client *c, int scriptPos);
+void scriptManageCommand(redisLua* l, client *c, int subCommandPos);
+int runGC(redisLua* l);
 
 /* Debugger shared state is stored inside this global structure. */
 #define LDB_BREAKPOINTS_MAX 64  /* Max number of breakpoints. */
@@ -1021,11 +1030,11 @@ void luaLoadLib(lua_State *lua, const char *libname, lua_CFunction luafunc) {
   lua_call(lua, 1, 0);
 }
 
+#ifndef LUA_LATEST
 LUALIB_API int (luaopen_cjson) (lua_State *L);
 LUALIB_API int (luaopen_struct) (lua_State *L);
 LUALIB_API int (luaopen_cmsgpack) (lua_State *L);
 LUALIB_API int (luaopen_bit) (lua_State *L);
-
 void luaLoadLibraries(lua_State *lua) {
     luaLoadLib(lua, "", luaopen_base);
     luaLoadLib(lua, LUA_TABLIBNAME, luaopen_table);
@@ -1042,6 +1051,7 @@ void luaLoadLibraries(lua_State *lua) {
     luaLoadLib(lua, LUA_OSLIBNAME, luaopen_os);
 #endif
 }
+#endif
 
 /* Remove a functions that we don't want to expose to the Redis scripting
  * environment. */
@@ -1091,6 +1101,30 @@ void scriptingEnableGlobalsProtection(lua_State *lua) {
     sdsfree(code);
 }
 
+#ifndef LUA_LATEST
+void PUBLIC scriptingInitGlobals() {
+    server.lua_client = NULL;
+    server.lua_caller = NULL;
+    server.lua_cur_script = NULL;
+    server.lua_timedout = 0;
+    ldbInit();
+
+    /* Create the (non connected) client that we use to execute Redis commands
+     * inside the Lua interpreter.
+     * Note: there is no need to create it again when this function is called
+     * by scriptingReset(). */
+    if (server.lua_client == NULL) {
+        server.lua_client = createClient(NULL);
+        server.lua_client->flags |= CLIENT_LUA;
+
+        /* We do not want to allow blocking commands inside Lua */
+        server.lua_client->flags |= CLIENT_DENY_BLOCKING;
+    }
+
+    server.luas = listCreate();
+}
+#endif
+
 /* Initialize the scripting environment.
  *
  * This function is called the first time at server startup with
@@ -1101,16 +1135,10 @@ void scriptingEnableGlobalsProtection(lua_State *lua) {
  * in order to reset the Lua scripting environment.
  *
  * However it is simpler to just call scriptingReset() that does just that. */
-void PUBLIC scriptingInitLegacy(int setup) {
-    lua_State *lua = lua_open();
+PUBLIC redisLua* scriptingInit() {
+    redisLua* rl = zmalloc(sizeof(*rl));
 
-    if (setup) {
-        server.lua_client = NULL;
-        server.lua_caller = NULL;
-        server.lua_cur_script = NULL;
-        server.lua_timedout = 0;
-        ldbInit();
-    }
+    lua_State *lua = lua_open();
 
     luaLoadLibraries(lua);
     luaRemoveUnsupportedFunctions(lua);
@@ -1118,8 +1146,8 @@ void PUBLIC scriptingInitLegacy(int setup) {
     /* Initialize a dictionary we use to map SHAs to scripts.
      * This is useful for replication, as we need to replicate EVALSHA
      * as EVAL, so we need to remember the associated script. */
-    server.lua_scripts = dictCreate(&shaScriptObjectDictType,NULL);
-    server.lua_scripts_mem = 0;
+    rl->lua_scripts = dictCreate(&shaScriptObjectDictType,NULL);
+    rl->lua_scripts_mem = 0;
 
     /* Register the redis commands table and fields */
     lua_newtable(lua);
@@ -1262,37 +1290,49 @@ void PUBLIC scriptingInitLegacy(int setup) {
         lua_pcall(lua,0,0,0);
     }
 
-    /* Create the (non connected) client that we use to execute Redis commands
-     * inside the Lua interpreter.
-     * Note: there is no need to create it again when this function is called
-     * by scriptingReset(). */
-    if (server.lua_client == NULL) {
-        server.lua_client = createClient(NULL);
-        server.lua_client->flags |= CLIENT_LUA;
-
-        /* We do not want to allow blocking commands inside Lua */
-        server.lua_client->flags |= CLIENT_DENY_BLOCKING;
-    }
-
     /* Lua beginners often don't use "local", this is likely to introduce
      * subtle bugs in their code. To prevent problems we protect accesses
      * to global variables. */
     scriptingEnableGlobalsProtection(lua);
 
-    server.lua = lua;
+    rl->lua = lua;
+
+    rl->version = LUA_VERSION_NUM;
+
+    rl->evalCommandCallback = scriptEvalCommand;
+    rl->evalShaCommandCallback = scriptEvalShaCommand;
+    rl->ldbRemoveChildCallback = ldbRemoveChild;
+    rl->ldbPendingChildrenCallback = ldbPendingChildren;
+    rl->ldbKillForkedSessionsCallback = ldbKillForkedSessions;
+    rl->luaCreateFunctionCallback = luaCreateFunction;
+    rl->scriptCommandCallback = scriptManageCommand;
+    rl->runGCCallback = runGC;
+
+    return rl;
 }
 
 /* Release resources related to Lua scripting.
  * This function is used in order to reset the scripting environment. */
-void scriptingRelease(void) {
-    dictRelease(server.lua_scripts);
-    server.lua_scripts_mem = 0;
-    lua_close(server.lua);
+void scriptingRelease(redisLua *lua) {
+    dictRelease(lua->lua_scripts);
+    lua->lua_scripts_mem = 0;
+    lua_close(lua->lua);
+    zfree(lua);
 }
 
-void scriptingReset(void) {
-    scriptingRelease();
-    scriptingInitLegacy(0);
+void scriptingReset(redisLua *lua) {
+    int foundNone = 0;
+    for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
+        redisLua* l  = listNodeValue(node);
+        if(l == lua){
+            listDelNode(server.luas, node);
+            foundNone = 1;
+            break;
+        }
+    }
+    serverAssert(foundNone);
+    scriptingRelease(lua);
+    listAddNodeHead(server.luas, scriptingInit());
 }
 
 /* Set an array of Redis String Objects as a Lua array (table) stored into a
@@ -1372,7 +1412,7 @@ int redis_math_randomseed (lua_State *L) {
  *
  * If 'c' is not NULL, on error the client is informed with an appropriate
  * error describing the nature of the problem and the Lua interpreter error. */
-sds PUBLIC luaCreateFunctionLegacy(client *c, lua_State *lua, robj *body) {
+sds luaCreateFunction(redisLua *lua, client *c, robj *body) {
     char funcname[43];
     dictEntry *de;
 
@@ -1381,7 +1421,7 @@ sds PUBLIC luaCreateFunctionLegacy(client *c, lua_State *lua, robj *body) {
     sha1hex(funcname+2,body->ptr,sdslen(body->ptr));
 
     sds sha = sdsnewlen(funcname+2,40);
-    if ((de = dictFind(server.lua_scripts,sha)) != NULL) {
+    if ((de = dictFind(lua->lua_scripts,sha)) != NULL) {
         sdsfree(sha);
         return dictGetKey(de);
     }
@@ -1393,25 +1433,25 @@ sds PUBLIC luaCreateFunctionLegacy(client *c, lua_State *lua, robj *body) {
     funcdef = sdscatlen(funcdef,body->ptr,sdslen(body->ptr));
     funcdef = sdscatlen(funcdef,"\nend",4);
 
-    if (luaL_loadbuffer(lua,funcdef,sdslen(funcdef),"@user_script")) {
+    if (luaL_loadbuffer(lua->lua,funcdef,sdslen(funcdef),"@user_script")) {
         if (c != NULL) {
             addReplyErrorFormat(c,
                 "Error compiling script (new function): %s\n",
-                lua_tostring(lua,-1));
+                lua_tostring(lua->lua,-1));
         }
-        lua_pop(lua,1);
+        lua_pop(lua->lua,1);
         sdsfree(sha);
         sdsfree(funcdef);
         return NULL;
     }
     sdsfree(funcdef);
 
-    if (lua_pcall(lua,0,0,0)) {
+    if (lua_pcall(lua->lua,0,0,0)) {
         if (c != NULL) {
             addReplyErrorFormat(c,"Error running script (new function): %s\n",
-                lua_tostring(lua,-1));
+                lua_tostring(lua->lua,-1));
         }
-        lua_pop(lua,1);
+        lua_pop(lua->lua,1);
         sdsfree(sha);
         return NULL;
     }
@@ -1419,9 +1459,9 @@ sds PUBLIC luaCreateFunctionLegacy(client *c, lua_State *lua, robj *body) {
     /* We also save a SHA1 -> Original script map in a dictionary
      * so that we can replicate / write in the AOF all the
      * EVALSHA commands as EVAL using the original script. */
-    int retval = dictAdd(server.lua_scripts,sha,body);
+    int retval = dictAdd(lua->lua_scripts,sha,body);
     serverAssertWithInfo(c ? c : server.lua_client,NULL,retval == DICT_OK);
-    server.lua_scripts_mem += sdsZmallocSize(sha) + getStringObjectSdsUsedMemory(body);
+    lua->lua_scripts_mem += sdsZmallocSize(sha) + getStringObjectSdsUsedMemory(body);
     incrRefCount(body);
     return sha;
 }
@@ -1473,8 +1513,8 @@ void resetLuaClient(void) {
     server.lua_client->flags &= ~CLIENT_MULTI;
 }
 
-void evalGenericCommand(client *c, int evalsha) {
-    lua_State *lua = server.lua;
+void evalGenericCommand(redisLua *rlua, client *c, int evalsha, int scriptPos) {
+    lua_State *lua = rlua->lua;
     char funcname[43];
     long long numkeys;
     long long initial_server_dirty = server.dirty;
@@ -1500,7 +1540,7 @@ void evalGenericCommand(client *c, int evalsha) {
     server.in_eval = 1;
 
     /* Get the number of arguments that are keys */
-    if (getLongLongFromObjectOrReply(c,c->argv[2],&numkeys,NULL) != C_OK)
+    if (getLongLongFromObjectOrReply(c,c->argv[scriptPos + 1],&numkeys,NULL) != C_OK)
         return;
     if (numkeys > (c->argc - 3)) {
         addReplyError(c,"Number of keys can't be greater than number of args");
@@ -1516,11 +1556,11 @@ void evalGenericCommand(client *c, int evalsha) {
     funcname[1] = '_';
     if (!evalsha) {
         /* Hash the code if this is an EVAL call */
-        sha1hex(funcname+2,c->argv[1]->ptr,sdslen(c->argv[1]->ptr));
+        sha1hex(funcname+2,c->argv[scriptPos]->ptr,sdslen(c->argv[scriptPos]->ptr));
     } else {
         /* We already have the SHA if it is an EVALSHA */
         int j;
-        char *sha = c->argv[1]->ptr;
+        char *sha = c->argv[scriptPos]->ptr;
 
         /* Convert to lowercase. We don't use tolower since the function
          * managed to always show up in the profiler output consuming
@@ -1546,7 +1586,7 @@ void evalGenericCommand(client *c, int evalsha) {
             addReply(c, shared.noscripterr);
             return;
         }
-        if (luaCreateFunctionLegacy(c,lua,c->argv[1]) == NULL) {
+        if (luaCreateFunction(rlua, c, c->argv[scriptPos]) == NULL) {
             lua_pop(lua,1); /* remove the error handler from the stack. */
             /* The error is sent to the client by luaCreateFunction()
              * itself when it returns NULL. */
@@ -1559,8 +1599,8 @@ void evalGenericCommand(client *c, int evalsha) {
 
     /* Populate the argv and keys table accordingly to the arguments that
      * EVAL received. */
-    luaSetGlobalArray(lua,"KEYS",c->argv+3,numkeys);
-    luaSetGlobalArray(lua,"ARGV",c->argv+3+numkeys,c->argc-3-numkeys);
+    luaSetGlobalArray(lua,"KEYS",c->argv + scriptPos + 2,numkeys);
+    luaSetGlobalArray(lua,"ARGV",c->argv+ scriptPos + 2 + numkeys,c->argc - 2 - numkeys - scriptPos);
 
     /* Set a hook in order to be able to stop the script execution if it
      * is running for too much time.
@@ -1577,7 +1617,7 @@ void evalGenericCommand(client *c, int evalsha) {
         lua_sethook(lua,luaMaskCountHook,LUA_MASKCOUNT,100000);
         delhook = 1;
     } else if (ldb.active) {
-        lua_sethook(server.lua,luaLdbLineHook,LUA_MASKLINE|LUA_MASKCOUNT,100000);
+        lua_sethook(rlua->lua,luaLdbLineHook,LUA_MASKLINE|LUA_MASKCOUNT,100000);
         delhook = 1;
     }
 
@@ -1652,13 +1692,13 @@ void evalGenericCommand(client *c, int evalsha) {
      * flush our cache of scripts that can be replicated as EVALSHA, while
      * for AOF we need to do so every time we rewrite the AOF file. */
     if (evalsha && !server.lua_replicate_commands) {
-        if (!replicationScriptCacheExists(c->argv[1]->ptr)) {
+        if (!replicationScriptCacheExists(c->argv[scriptPos]->ptr)) {
             /* This script is not in our script cache, replicate it as
              * EVAL, then add it into the script cache, as from now on
              * slaves and AOF know about it. */
-            robj *script = dictFetchValue(server.lua_scripts,c->argv[1]->ptr);
+            robj *script = dictFetchValue(rlua->lua_scripts,c->argv[scriptPos]->ptr);
 
-            replicationScriptCacheAdd(c->argv[1]->ptr);
+            replicationScriptCacheAdd(c->argv[scriptPos]->ptr);
             serverAssertWithInfo(c,NULL,script != NULL);
 
             /* If the script did not produce any changes in the dataset we want
@@ -1682,14 +1722,14 @@ void evalGenericCommand(client *c, int evalsha) {
     server.in_eval = 0;
 }
 
-void PUBLIC evalCommandLegacy(client *c) {
+void scriptEvalCommand(redisLua *lua, client *c, int scriptPos) {
     if (!(c->flags & CLIENT_LUA_DEBUG))
-        evalGenericCommand(c,0);
+        evalGenericCommand(lua, c, 0, scriptPos);
     else
-        evalGenericCommandWithDebugging(c,0);
+        evalGenericCommandWithDebugging(c, lua, 0, scriptPos);
 }
 
-void PUBLIC evalShaCommandLegacy(client *c) {
+void scriptEvalShaCommand(redisLua *lua, client *c, int scriptPos) {
     if (sdslen(c->argv[1]->ptr) != 40) {
         /* We know that a match is not possible if the provided SHA is
          * not the right length. So we return an error ASAP, this way
@@ -1699,15 +1739,19 @@ void PUBLIC evalShaCommandLegacy(client *c) {
         return;
     }
     if (!(c->flags & CLIENT_LUA_DEBUG))
-        evalGenericCommand(c,1);
+        evalGenericCommand(lua, c, 1, scriptPos);
     else {
         addReplyError(c,"Please use EVAL instead of EVALSHA for debugging");
         return;
     }
 }
 
-void PUBLIC scriptCommandLegacy(client *c) {
-    if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"help")) {
+int runGC(redisLua* l) {
+    return lua_gc(l->lua, LUA_GCCOUNT, 0);
+}
+
+void scriptManageCommand(redisLua* l, client *c, int subCommandPos) {
+    if (c->argc == 2 && !strcasecmp(c->argv[subCommandPos]->ptr,"help")) {
         const char *help[] = {
 "DEBUG (yes|sync|no) -- Set the debug mode for subsequent scripts executed.",
 "EXISTS <sha1> [<sha1> ...] -- Return information about the existence of the scripts in the script cache.",
@@ -1717,27 +1761,27 @@ void PUBLIC scriptCommandLegacy(client *c) {
 NULL
         };
         addReplyHelp(c, help);
-    } else if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"flush")) {
-        scriptingReset();
+    } else if (c->argc == subCommandPos + 1 && !strcasecmp(c->argv[subCommandPos]->ptr,"flush")) {
+        scriptingReset(l);
         addReply(c,shared.ok);
         replicationScriptCacheFlush();
         server.dirty++; /* Propagating this command is a good idea. */
-    } else if (c->argc >= 2 && !strcasecmp(c->argv[1]->ptr,"exists")) {
+    } else if (c->argc >= subCommandPos + 1 && !strcasecmp(c->argv[subCommandPos]->ptr,"exists")) {
         int j;
 
-        addReplyArrayLen(c, c->argc-2);
-        for (j = 2; j < c->argc; j++) {
-            if (dictFind(server.lua_scripts,c->argv[j]->ptr))
+        addReplyArrayLen(c, c->argc - subCommandPos - 1);
+        for (j = subCommandPos + 1; j < c->argc; j++) {
+            if (dictFind(l->lua_scripts,c->argv[j]->ptr))
                 addReply(c,shared.cone);
             else
                 addReply(c,shared.czero);
         }
-    } else if (c->argc == 3 && !strcasecmp(c->argv[1]->ptr,"load")) {
-        sds sha = luaCreateFunctionLegacy(c,server.lua,c->argv[2]);
+    } else if (c->argc == subCommandPos + 2 && !strcasecmp(c->argv[subCommandPos]->ptr,"load")) {
+        sds sha = luaCreateFunction(l, c, c->argv[subCommandPos + 1]);
         if (sha == NULL) return; /* The error was sent by luaCreateFunction(). */
         addReplyBulkCBuffer(c,sha,40);
         forceCommandPropagation(c,PROPAGATE_REPL|PROPAGATE_AOF);
-    } else if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"kill")) {
+    } else if (c->argc == subCommandPos + 1 && !strcasecmp(c->argv[subCommandPos]->ptr,"kill")) {
         if (server.lua_caller == NULL) {
             addReplyError(c,"-NOTBUSY No scripts in execution right now.");
         } else if (server.lua_caller->flags & CLIENT_MASTER) {
@@ -1748,18 +1792,18 @@ NULL
             server.lua_kill = 1;
             addReply(c,shared.ok);
         }
-    } else if (c->argc == 3 && !strcasecmp(c->argv[1]->ptr,"debug")) {
+    } else if (c->argc == subCommandPos + 2 && !strcasecmp(c->argv[subCommandPos]->ptr,"debug")) {
         if (clientHasPendingReplies(c)) {
             addReplyError(c,"SCRIPT DEBUG must be called outside a pipeline");
             return;
         }
-        if (!strcasecmp(c->argv[2]->ptr,"no")) {
+        if (!strcasecmp(c->argv[subCommandPos + 1]->ptr,"no")) {
             ldbDisable(c);
             addReply(c,shared.ok);
-        } else if (!strcasecmp(c->argv[2]->ptr,"yes")) {
+        } else if (!strcasecmp(c->argv[subCommandPos + 1]->ptr,"yes")) {
             ldbEnable(c);
             addReply(c,shared.ok);
-        } else if (!strcasecmp(c->argv[2]->ptr,"sync")) {
+        } else if (!strcasecmp(c->argv[subCommandPos + 1]->ptr,"sync")) {
             ldbEnable(c);
             addReply(c,shared.ok);
             c->flags |= CLIENT_LUA_DEBUG_SYNC;
@@ -1960,7 +2004,8 @@ void ldbEndSession(client *c) {
 /* If the specified pid is among the list of children spawned for
  * forked debugging sessions, it is removed from the children list.
  * If the pid was found non-zero is returned. */
-int PUBLIC ldbRemoveChildLegacy(pid_t pid) {
+int ldbRemoveChild(redisLua* lua, pid_t pid) {
+    UNUSED(lua);
     listNode *ln = listSearchKey(ldb.children,(void*)(unsigned long)pid);
     if (ln) {
         listDelNode(ldb.children,ln);
@@ -1971,12 +2016,14 @@ int PUBLIC ldbRemoveChildLegacy(pid_t pid) {
 
 /* Return the number of children we still did not receive termination
  * acknowledge via wait() in the parent process. */
-int PUBLIC ldbPendingChildrenLegacy(void) {
+int ldbPendingChildren(redisLua* lua) {
+    UNUSED(lua);
     return listLength(ldb.children);
 }
 
 /* Kill all the forked sessions. */
-void PUBLIC ldbKillForkedSessionsLegacy(void) {
+void ldbKillForkedSessions(redisLua* lua) {
+    UNUSED(lua);
     listIter li;
     listNode *ln;
 
@@ -1992,9 +2039,9 @@ void PUBLIC ldbKillForkedSessionsLegacy(void) {
 
 /* Wrapper for EVAL / EVALSHA that enables debugging, and makes sure
  * that when EVAL returns, whatever happened, the session is ended. */
-void evalGenericCommandWithDebugging(client *c, int evalsha) {
+void evalGenericCommandWithDebugging(client *c, redisLua *lua, int evalsha, int scriptPos) {
     if (ldbStartSession(c)) {
-        evalGenericCommand(c,evalsha);
+        evalGenericCommand(lua, c, evalsha, scriptPos);
         ldbEndSession(c);
     } else {
         ldbDisable(c);
