@@ -9,4 +9,6 @@ endif
 all:
 	gcc $(FINAL_LUA_CFLAGS) -I../../deps/lua/src/ -fvisibility=hidden scripting.c -c -o scripting.o
 	ld $(FINAL_LUA_LDFLAGS) scripting.o ../../deps/lua/src/liblua.a -r -o liblua_legacy.o
+ifneq ($(uname_S),Darwin)
 	objcopy --localize-hidden liblua_legacy.o liblua_legacy.o
+endif
