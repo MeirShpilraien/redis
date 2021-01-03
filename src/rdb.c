@@ -1276,8 +1276,9 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
      * the script cache as well: on successful PSYNC after a restart, we need
      * to be able to process any EVALSHA inside the replication backlog the
      * master will send us. */
-    if (rsi && dictSize(server.lua_scripts)) {
-        di = dictGetIterator(server.lua_scripts);
+    redisLua* l = findLuaVersion(DEFAULT_LUA_VERSION);
+    if (rsi && dictSize(l->lua_scripts)) {
+        di = dictGetIterator(l->lua_scripts);
         while((de = dictNext(di)) != NULL) {
             robj *body = dictGetVal(de);
             if (rdbSaveAuxField(rdb,"lua",3,body->ptr,sdslen(body->ptr)) == -1)
@@ -2431,7 +2432,8 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
                 if (rsi) rsi->repl_offset = strtoll(auxval->ptr,NULL,10);
             } else if (!strcasecmp(auxkey->ptr,"lua")) {
                 /* Load the script back in memory. */
-                if (luaCreateFunctionLegacy(NULL,server.lua,auxval) == NULL) {
+                redisLua* l = findLuaVersion(DEFAULT_LUA_VERSION);
+                if (l->luaCreateFunctionCallback(l, NULL, auxval) == NULL) {
                     rdbReportCorruptRDB(
                         "Can't load Lua script from RDB file! "
                         "BODY: %s", (char*)auxval->ptr);

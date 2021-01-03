@@ -1029,14 +1029,18 @@ struct redisMemOverhead *getMemoryOverheadData(void) {
     mh->aof_buffer = mem;
     mem_total+=mem;
 
-    mem = server.lua_scripts_mem;
-    mem += dictSize(server.lua_scripts) * sizeof(dictEntry) +
-        dictSlots(server.lua_scripts) * sizeof(dictEntry*);
-    mem += dictSize(server.repl_scriptcache_dict) * sizeof(dictEntry) +
-        dictSlots(server.repl_scriptcache_dict) * sizeof(dictEntry*);
-    if (listLength(server.repl_scriptcache_fifo) > 0) {
-        mem += listLength(server.repl_scriptcache_fifo) * (sizeof(listNode) + 
-            sdsZmallocSize(listNodeValue(listFirst(server.repl_scriptcache_fifo))));
+    mem = 0;
+    for(listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
+        redisLua* l = listNodeValue(node);
+        mem += l->lua_scripts_mem;
+        mem += dictSize(l->lua_scripts) * sizeof(dictEntry) +
+            dictSlots(l->lua_scripts) * sizeof(dictEntry*);
+        mem += dictSize(server.repl_scriptcache_dict) * sizeof(dictEntry) +
+            dictSlots(server.repl_scriptcache_dict) * sizeof(dictEntry*);
+        if (listLength(server.repl_scriptcache_fifo) > 0) {
+            mem += listLength(server.repl_scriptcache_fifo) * (sizeof(listNode) +
+                sdsZmallocSize(listNodeValue(listFirst(server.repl_scriptcache_fifo))));
+        }
     }
     mh->lua_caches = mem;
     mem_total+=mem;
@@ -1151,7 +1155,12 @@ sds getMemoryDoctorReport(void) {
         }
 
         /* Too many scripts are cached? */
-        if (dictSize(server.lua_scripts) > 1000) {
+        size_t cachedScripts = 0;
+        for(listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
+            redisLua* l = listNodeValue(node);
+            cachedScripts += dictSize(l->lua_scripts);
+        }
+        if (cachedScripts > 1000) {
             many_scripts = 1;
             num_reports++;
         }

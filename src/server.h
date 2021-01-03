@@ -84,6 +84,8 @@ typedef long long ustime_t; /* microsecond time type. */
 #include "endianconv.h"
 #include "crc64.h"
 
+#define DEFAULT_LUA_VERSION     501
+
 /* Error codes */
 #define C_OK                    0
 #define C_ERR                   -1
@@ -1105,6 +1107,21 @@ struct clusterState;
 #define CHILD_TYPE_LDB 3
 #define CHILD_TYPE_MODULE 4
 
+typedef struct redisLua {
+    lua_State *lua; /* The Lua interpreter. We use just one for all clients */
+    int version;
+    dict *lua_scripts;         /* A dictionary of SHA1 -> Lua scripts */
+    unsigned long long lua_scripts_mem;  /* Cached scripts' memory + oh */
+    void (*evalCommandCallback)(struct redisLua *lua, client *c, int scriptPos);
+    void (*evalShaCommandCallback)(struct redisLua *lua, client *c, int scriptPos);
+    int (*ldbRemoveChildCallback)(struct redisLua *lua, pid_t pid);
+    int (*ldbPendingChildrenCallback)(struct redisLua *lua);
+    void (*ldbKillForkedSessionsCallback)(struct redisLua *lua);
+    sds (*luaCreateFunctionCallback)(struct redisLua *lua, client *c, robj *body);
+    void (*scriptCommandCallback)(struct redisLua* l, client *c, int subCommandPos);
+    int (*runGCCallback)(struct redisLua* l);
+}redisLua;
+
 struct redisServer {
     /* General */
     pid_t pid;                  /* Main process pid. */
@@ -1495,13 +1512,10 @@ struct redisServer {
                                         is down? */
     int cluster_config_file_lock_fd;   /* cluster config fd, will be flock */
     /* Scripting */
-    lua_State *lua; /* The Lua interpreter. We use just one for all clients */
-    lua_State *luaLetest; /* The Lua interpreter. We use just one for all clients */
+    list *luas;
     client *lua_client;   /* The "fake client" to query Redis from Lua */
     client *lua_caller;   /* The client running EVAL right now, or NULL */
     char* lua_cur_script; /* SHA1 of the script currently running, or NULL */
-    dict *lua_scripts;         /* A dictionary of SHA1 -> Lua scripts */
-    unsigned long long lua_scripts_mem;  /* Cached scripts' memory + oh */
     mstime_t lua_time_limit;  /* Script timeout in milliseconds */
     mstime_t lua_time_start;  /* Start time of script, milliseconds time */
     int lua_write_dirty;  /* True if a write command was called during the
@@ -2317,12 +2331,9 @@ int redis_check_rdb_main(int argc, char **argv, FILE *fp);
 int redis_check_aof_main(int argc, char **argv);
 
 /* Scripting */
-void scriptingInitLegacy(int setup);
-void scriptingInit(int setup);
-int ldbRemoveChildLegacy(pid_t pid);
-void ldbKillForkedSessionsLegacy(void);
-int ldbPendingChildrenLegacy(void);
-sds luaCreateFunctionLegacy(client *c, lua_State *lua, robj *body);
+void scriptingInitGlobals();
+redisLua* scriptingInit();
+redisLua* scriptingInitLatest();
 
 /* Blocked clients */
 void processUnblockedClients(void);
@@ -2540,10 +2551,8 @@ void clientCommand(client *c);
 void helloCommand(client *c);
 void evalCommand(client *c);
 void evalShaCommand(client *c);
+redisLua* findLuaVersion(int version);
 void scriptCommand(client *c);
-void evalCommandLegacy(client *c);
-void evalShaCommandLegacy(client *c);
-void scriptCommandLegacy(client *c);
 void timeCommand(client *c);
 void bitopCommand(client *c);
 void bitcountCommand(client *c);

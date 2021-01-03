@@ -875,15 +875,11 @@ struct redisCommand redisCommandTable[] = {
 
     /* EVAL can modify the dataset, however it is not flagged as a write
      * command since we do the check while running commands from Lua. */
-    {"eval",evalCommandLegacy,-3,
+    {"eval",evalCommand,-3,
      "no-script @scripting",
      0,evalGetKeys,0,0,0,0,0,0},
 
-     {"evalnew",evalCommand,-3,
-      "no-script @scripting",
-      0,evalGetKeys,0,0,0,0,0,0},
-
-    {"evalsha",evalShaCommandLegacy,-3,
+    {"evalsha",evalShaCommand,-3,
      "no-script @scripting",
      0,evalGetKeys,0,0,0,0,0,0},
 
@@ -891,7 +887,7 @@ struct redisCommand redisCommandTable[] = {
      "admin random ok-loading ok-stale",
      0,NULL,0,0,0,0,0,0},
 
-    {"script",scriptCommandLegacy,-2,
+    {"script",scriptCommand,-2,
      "no-script @scripting",
      0,NULL,0,0,0,0,0,0},
 
@@ -1897,11 +1893,20 @@ void checkChildrenDone(void) {
             ModuleForkDoneHandler(exitcode,bysignal);
             if (!bysignal && exitcode == 0) receiveChildInfo();
         } else {
-            if (!ldbRemoveChildLegacy(pid)) {
-                serverLog(LL_WARNING,
-                    "Warning, detected child with unmatched pid: %ld",
-                    (long)pid);
+            int processFound = 0;
+            for(listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)) {
+                redisLua* l = listNodeValue(node);
+                if (l->ldbRemoveChildCallback(l, pid)) {
+                    processFound = 1;
+                    break;
+                }
             }
+            if(!processFound){
+                serverLog(LL_WARNING,
+                          "Warning, detected child with unmatched pid: %ld",
+                          (long)pid);
+            }
+
         }
         updateDictResizePolicy();
         closeChildInfoPipe();
@@ -1936,8 +1941,12 @@ void cronUpdateMemoryStats() {
             /* LUA memory isn't part of zmalloc_used, but it is part of the process RSS,
              * so we must deduct it in order to be able to calculate correct
              * "allocator fragmentation" ratio */
-//            size_t lua_memory = lua_gc(server.lua,LUA_GCCOUNT,0)*1024LL;
-//            server.cron_malloc_stats.allocator_resident = server.cron_malloc_stats.process_rss - lua_memory;
+            size_t lua_memory = 0;
+            for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
+                redisLua* l  = listNodeValue(node);
+                lua_memory += l->runGCCallback(l) * 1024LL;
+            }
+            server.cron_malloc_stats.allocator_resident = server.cron_malloc_stats.process_rss - lua_memory;
         }
         if (!server.cron_malloc_stats.allocator_active)
             server.cron_malloc_stats.allocator_active = server.cron_malloc_stats.allocator_resident;
@@ -2071,7 +2080,12 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     }
 
     /* Check if a background saving or AOF rewrite in progress terminated. */
-    if (hasActiveChildProcess() || ldbPendingChildrenLegacy())
+    int pendingLuaChildren = 0;
+    for(listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
+        redisLua* l = listNodeValue(node);
+        pendingLuaChildren += l->ldbPendingChildrenCallback(l);
+    }
+    if (hasActiveChildProcess() || pendingLuaChildren)
     {
         checkChildrenDone();
     } else {
@@ -3181,8 +3195,9 @@ void initServer(void) {
 
     if (server.cluster_enabled) clusterInit();
     replicationScriptCacheInit();
-    scriptingInitLegacy(1);
-    scriptingInit(1);
+    scriptingInitGlobals();
+    listAddNodeHead(server.luas, scriptingInit());
+    listAddNodeHead(server.luas, scriptingInitLatest());
     slowlogInit();
     latencyMonitorInit();
 }
@@ -3847,7 +3862,7 @@ int processCommand(client *c) {
         /* Save out_of_memory result at script start, otherwise if we check OOM
          * until first write within script, memory used by lua stack and
          * arguments might interfere. */
-        if (c->cmd->proc == evalCommandLegacy || c->cmd->proc == evalShaCommandLegacy) {
+        if (c->cmd->proc == evalCommand || c->cmd->proc == evalShaCommand) {
             server.lua_oom = out_of_memory;
         }
     }
@@ -3945,7 +3960,7 @@ int processCommand(client *c) {
         !(c->cmd->proc == shutdownCommand &&
           c->argc == 2 &&
           tolower(((char*)c->argv[1]->ptr)[0]) == 'n') &&
-        !(c->cmd->proc == scriptCommandLegacy &&
+        !(c->cmd->proc == scriptCommand &&
           c->argc == 2 &&
           tolower(((char*)c->argv[1]->ptr)[0]) == 'k'))
     {
@@ -4006,7 +4021,11 @@ int prepareForShutdown(int flags) {
         redisCommunicateSystemd("STOPPING=1\n");
 
     /* Kill all the Lua debugger forked sessions. */
-    ldbKillForkedSessionsLegacy();
+    for(listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)) {
+        redisLua* l = listNodeValue(node);
+        l->ldbKillForkedSessionsCallback(l);
+    }
+
 
     /* Kill the saving child if there is a background saving in progress.
        We want to avoid race conditions, for instance our saving child may
@@ -4142,6 +4161,83 @@ void pingCommand(client *c) {
 
 void echoCommand(client *c) {
     addReplyBulk(c,c->argv[1]);
+}
+
+redisLua* findLuaVersion(int version){
+    for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
+        redisLua* l  = listNodeValue(node);
+        if(l->version == version){
+            return l;
+        }
+    }
+    return NULL;
+}
+
+void scriptCommand(client *c) {
+    long long version = DEFAULT_LUA_VERSION;
+    int subCommandPos = 1;
+    if(strcmp(c->argv[1]->ptr, "VERSION") == 0){
+        if(getLongLongFromObject(c->argv[2], &version) != C_OK){
+            addReplyError(c,"Could not parse requested Lua version");
+            return;
+        }
+        subCommandPos = 3;
+        if(c->argc < 4){
+            addReplyErrorFormat(c,
+                "wrong number of arguments for '%s' command",
+                (char*)c->argv[0]->ptr);
+            return;
+        }
+    }
+    redisLua* l = findLuaVersion(version);
+    printf("Found version %d\r\n", l->version);
+    if(!l){
+        addReplyError(c,"Requested Lua version does not exists");
+        return;
+    }
+    l->scriptCommandCallback(l, c, subCommandPos);
+}
+
+void evalCommand(client *c) {
+    long long version = DEFAULT_LUA_VERSION;
+    int scriptPos = 1;
+    if(strcmp(c->argv[1]->ptr, "VERSION") == 0){
+        if(getLongLongFromObject(c->argv[2], &version) != C_OK){
+            addReplyError(c,"Could not parse requested Lua version");
+            return;
+        }
+        scriptPos = 3;
+        if(c->argc < 5){
+            addReplyErrorFormat(c,
+                "wrong number of arguments for '%s' command",
+                (char*)c->argv[0]->ptr);
+            return;
+        }
+    }
+    redisLua* l = findLuaVersion(version);
+    if(!l){
+        addReplyError(c,"Requested Lua version does not exists");
+        return;
+    }
+    l->evalCommandCallback(l, c, scriptPos);
+}
+
+void evalShaCommand(client *c){
+    long long version = DEFAULT_LUA_VERSION;
+    int scriptPos = 1;
+    if(strcmp(c->argv[1]->ptr, "VERSION") == 0){
+        if(getLongLongFromObject(c->argv[2], &version) != C_OK){
+            addReplyError(c,"Could not parse requested Lua version");
+            return;
+        }
+        scriptPos = 3;
+    }
+    redisLua* l = findLuaVersion(version);
+    if(!l){
+        addReplyError(c,"Requested Lua version does not exists");
+        return;
+    }
+    l->evalShaCommandCallback(l, c, scriptPos);
 }
 
 void timeCommand(client *c) {
@@ -4429,7 +4525,11 @@ sds genRedisInfoString(const char *section) {
         size_t zmalloc_used = zmalloc_used_memory();
         size_t total_system_mem = server.system_memory_size;
         const char *evict_policy = evictPolicyToString();
-//        long long memory_lua = server.lua ? (long long)lua_gc(server.lua,LUA_GCCOUNT,0)*1024 : 0;
+        long long memory_lua = 0;
+        for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
+            redisLua* l  = listNodeValue(node);
+            memory_lua += l->runGCCallback(l) * 1024LL;
+        }
         struct redisMemOverhead *mh = getMemoryOverheadData();
 
         /* Peak memory is updated from time to time by serverCron() so it
@@ -4442,10 +4542,16 @@ sds genRedisInfoString(const char *section) {
         bytesToHuman(hmem,zmalloc_used);
         bytesToHuman(peak_hmem,server.stat_peak_memory);
         bytesToHuman(total_system_hmem,total_system_mem);
-//        bytesToHuman(used_memory_lua_hmem,memory_lua);
+        bytesToHuman(used_memory_lua_hmem,memory_lua);
         bytesToHuman(used_memory_scripts_hmem,mh->lua_caches);
         bytesToHuman(used_memory_rss_hmem,server.cron_malloc_stats.process_rss);
         bytesToHuman(maxmemory_hmem,server.maxmemory);
+
+        size_t luaDictsSizes = 0;
+        for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
+            redisLua* l  = listNodeValue(node);
+            luaDictsSizes += dictSize(l->lua_scripts);
+        }
 
         if (sections++) info = sdscat(info,"\r\n");
         info = sdscatprintf(info,
@@ -4466,7 +4572,7 @@ sds genRedisInfoString(const char *section) {
             "allocator_resident:%zu\r\n"
             "total_system_memory:%lu\r\n"
             "total_system_memory_human:%s\r\n"
-            "used_memory_lua:%d\r\n"
+            "used_memory_lua:%lld\r\n"
             "used_memory_lua_human:%s\r\n"
             "used_memory_scripts:%lld\r\n"
             "used_memory_scripts_human:%s\r\n"
@@ -4507,11 +4613,11 @@ sds genRedisInfoString(const char *section) {
             server.cron_malloc_stats.allocator_resident,
             (unsigned long)total_system_mem,
             total_system_hmem,
-            0,
+            memory_lua,
             used_memory_lua_hmem,
             (long long) mh->lua_caches,
             used_memory_scripts_hmem,
-            dictSize(server.lua_scripts),
+            luaDictsSizes,
             server.maxmemory,
             maxmemory_hmem,
             evict_policy,
