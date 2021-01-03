@@ -58,6 +58,7 @@ void luaLdbLineHook(lua_State *lua, lua_Debug *ar);
 void ldbLog(sds entry);
 void ldbLogRedisReply(char *reply);
 sds ldbCatStackValue(sds s, lua_State *lua, int idx);
+void luaLoadLibraries(lua_State *lua);
 
 sds luaCreateFunction(redisLua *lua, client *c, robj *body);
 void ldbKillForkedSessions(redisLua* l);

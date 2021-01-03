@@ -4547,7 +4547,7 @@ sds genRedisInfoString(const char *section) {
         bytesToHuman(used_memory_rss_hmem,server.cron_malloc_stats.process_rss);
         bytesToHuman(maxmemory_hmem,server.maxmemory);
 
-        size_t luaDictsSizes = 0;
+        unsigned long luaDictsSizes = 0;
         for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
             redisLua* l  = listNodeValue(node);
             luaDictsSizes += dictSize(l->lua_scripts);

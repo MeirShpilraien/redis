@@ -4,10 +4,6 @@
 #define lua_open luaL_newstate
 #define luaL_checkint luaL_checkinteger
 
-typedef struct lua_State lua_State;
-
-void luaLoadLibraries(lua_State *lua);
-
 #include "scripting.c"
 
 LUALIB_API int (luaopen_cjson) (lua_State *L);

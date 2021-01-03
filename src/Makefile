@@ -85,6 +85,11 @@ endif
 
 FINAL_CFLAGS=$(STD) $(WARN) $(OPT) $(DEBUG) $(CFLAGS) $(REDIS_CFLAGS)
 LUA_CFLAGS=$(STD) $(WARN) $(OPT) $(DEBUG) $(CFLAGS) $(REDIS_CFLAGS)
+LUA_LDFLAGS=
+ifneq ($(findstring -m32,$(FINAL_CFLAGS)),)
+	LUA_CFLAGS+= -fno-pic
+	LUA_LDFLAGS+= -melf_i386
+endif
 FINAL_LDFLAGS=$(LDFLAGS) $(REDIS_LDFLAGS) $(DEBUG)
 FINAL_LIBS=-lm
 DEBUG=-g -ggdb
@@ -331,13 +336,13 @@ scripting.o: scripting.c
 	$(QUIET_CC)$(CC) $(LUA_CFLAGS) -I../deps/lua/src -fvisibility=hidden scripting.c -c -o $@
 
 lua_latest.o: scripting_latest.o
-	$(QUIET_LINK)ld $^ ../deps/lua-5.4.2/src/liblua.a -r -o $@
+	$(QUIET_LINK)ld $(LUA_LDFLAGS) $^ ../deps/lua-5.4.2/src/liblua.a -r -o $@
 ifneq ($(uname_S),Darwin)
 	$(QUIET_OBJCOPY)objcopy --localize-hidden $@ $@
 endif
 
 lua_legacy.o: scripting.o
-	$(QUIET_LINK)ld $^ ../deps/lua/src/liblua.a -r -o $@
+	$(QUIET_LINK)ld $(LUA_LDFLAGS) $^ ../deps/lua/src/liblua.a -r -o $@
 ifneq ($(uname_S),Darwin)
 	$(QUIET_OBJCOPY)objcopy --localize-hidden $@ $@
 endif
