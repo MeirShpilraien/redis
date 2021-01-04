@@ -1276,26 +1276,27 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
      * the script cache as well: on successful PSYNC after a restart, we need
      * to be able to process any EVALSHA inside the replication backlog the
      * master will send us. */
-    for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
-        redisLua* l  = listNodeValue(node);
-        if (rsi && dictSize(l->lua_scripts)) {
-            di = dictGetIterator(l->lua_scripts);
-            while((de = dictNext(di)) != NULL) {
-                robj *body = dictGetVal(de);
-                sds key = sdsnew("lua");
-                if(l->version != DEFAULT_LUA_VERSION){
-                    key = sdscatfmt(key, "%I", l->version);
-                }
-                if (rdbSaveAuxField(rdb, key, sdslen(key), body->ptr, sdslen(body->ptr)) == -1){
+    if(rsi){
+        for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
+            redisLua* l  = listNodeValue(node);
+            if (dictSize(l->lua_scripts)) {
+                di = dictGetIterator(l->lua_scripts);
+                while((de = dictNext(di)) != NULL) {
+                    robj *body = dictGetVal(de);
+                    sds key = sdsnew("lua");
+                    if(l->version != DEFAULT_LUA_VERSION){
+                        key = sdscatfmt(key, "%I", l->version);
+                    }
+                    if (rdbSaveAuxField(rdb, key, sdslen(key), body->ptr, sdslen(body->ptr)) == -1){
+                        sdsfree(key);
+                        goto werr;
+                    }
                     sdsfree(key);
-                    goto werr;
                 }
-                sdsfree(key);
+                dictReleaseIterator(di);
+                di = NULL; /* So that we don't release it again on error. */
             }
-            dictReleaseIterator(di);
-            di = NULL; /* So that we don't release it again on error. */
         }
-
     }
 
     if (rdbSaveModulesAux(rdb, REDISMODULE_AUX_AFTER_RDB) == -1) goto werr;

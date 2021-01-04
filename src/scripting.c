@@ -1671,13 +1671,13 @@ void evalGenericCommand(redisLua *rlua, client *c, int evalsha, int scriptPos) {
      * flush our cache of scripts that can be replicated as EVALSHA, while
      * for AOF we need to do so every time we rewrite the AOF file. */
     if (evalsha && !server.lua_replicate_commands) {
-        if (!replicationScriptCacheExists(c->argv[scriptPos]->ptr)) {
+        if (!replicationScriptCacheExists(c->argv[scriptPos]->ptr, rlua->version)) {
             /* This script is not in our script cache, replicate it as
              * EVAL, then add it into the script cache, as from now on
              * slaves and AOF know about it. */
             robj *script = dictFetchValue(rlua->lua_scripts,c->argv[scriptPos]->ptr);
 
-            replicationScriptCacheAdd(c->argv[scriptPos]->ptr);
+            replicationScriptCacheAdd(c->argv[scriptPos]->ptr, rlua->version);
             serverAssertWithInfo(c,NULL,script != NULL);
 
             /* If the script did not produce any changes in the dataset we want

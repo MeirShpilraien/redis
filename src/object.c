@@ -1035,13 +1035,15 @@ struct redisMemOverhead *getMemoryOverheadData(void) {
         mem += l->lua_scripts_mem;
         mem += dictSize(l->lua_scripts) * sizeof(dictEntry) +
             dictSlots(l->lua_scripts) * sizeof(dictEntry*);
-        mem += dictSize(server.repl_scriptcache_dict) * sizeof(dictEntry) +
-            dictSlots(server.repl_scriptcache_dict) * sizeof(dictEntry*);
-        if (listLength(server.repl_scriptcache_fifo) > 0) {
-            mem += listLength(server.repl_scriptcache_fifo) * (sizeof(listNode) +
-                sdsZmallocSize(listNodeValue(listFirst(server.repl_scriptcache_fifo))));
-        }
     }
+
+    mem += dictSize(server.repl_scriptcache_dict) * sizeof(dictEntry) +
+        dictSlots(server.repl_scriptcache_dict) * sizeof(dictEntry*);
+    if (listLength(server.repl_scriptcache_fifo) > 0) {
+        mem += listLength(server.repl_scriptcache_fifo) * (sizeof(listNode) +
+            sdsZmallocSize(listNodeValue(listFirst(server.repl_scriptcache_fifo))));
+    }
+
     mh->lua_caches = mem;
     mem_total+=mem;
 

@@ -2991,9 +2991,10 @@ void replicationScriptCacheFlush(void) {
 
 /* Add an entry into the script cache, if we reach max number of entries the
  * oldest is removed from the list. */
-void replicationScriptCacheAdd(sds sha1) {
+void replicationScriptCacheAdd(sds sha1, int luaVer) {
     int retval;
     sds key = sdsdup(sha1);
+    key = sdscatfmt(key, "-%d", luaVer);
 
     /* Evict oldest. */
     if (listLength(server.repl_scriptcache_fifo) == server.repl_scriptcache_size)
@@ -3014,8 +3015,12 @@ void replicationScriptCacheAdd(sds sha1) {
 
 /* Returns non-zero if the specified entry exists inside the cache, that is,
  * if all the slaves are aware of this script SHA1. */
-int replicationScriptCacheExists(sds sha1) {
-    return dictFind(server.repl_scriptcache_dict,sha1) != NULL;
+int replicationScriptCacheExists(sds sha1, int luaVer) {
+    sds key = sdsdup(sha1);
+    key = sdscatfmt(key, "-%d", luaVer);
+    int ret = dictFind(server.repl_scriptcache_dict,key) != NULL;
+    sdsfree(key);
+    return ret;
 }
 
 /* ----------------------- SYNCHRONOUS REPLICATION --------------------------
