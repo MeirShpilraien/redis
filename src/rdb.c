@@ -1276,16 +1276,23 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
      * the script cache as well: on successful PSYNC after a restart, we need
      * to be able to process any EVALSHA inside the replication backlog the
      * master will send us. */
-    redisLua* l = findLuaVersion(DEFAULT_LUA_VERSION);
-    if (rsi && dictSize(l->lua_scripts)) {
-        di = dictGetIterator(l->lua_scripts);
-        while((de = dictNext(di)) != NULL) {
-            robj *body = dictGetVal(de);
-            if (rdbSaveAuxField(rdb,"lua",3,body->ptr,sdslen(body->ptr)) == -1)
-                goto werr;
+    for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
+        redisLua* l  = listNodeValue(node);
+        if (rsi && dictSize(l->lua_scripts)) {
+            di = dictGetIterator(l->lua_scripts);
+            while((de = dictNext(di)) != NULL) {
+                robj *body = dictGetVal(de);
+                sds key = sdsnew("lua");
+                if(l->version != DEFAULT_LUA_VERSION){
+                    sdscatfmt(key, "%d", l->version);
+                }
+                if (rdbSaveAuxField(rdb, key, sdslen(key), body->ptr, sdslen(body->ptr)) == -1)
+                    goto werr;
+            }
+            dictReleaseIterator(di);
+            di = NULL; /* So that we don't release it again on error. */
         }
-        dictReleaseIterator(di);
-        di = NULL; /* So that we don't release it again on error. */
+
     }
 
     if (rdbSaveModulesAux(rdb, REDISMODULE_AUX_AFTER_RDB) == -1) goto werr;
@@ -2438,6 +2445,15 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
                         "Can't load Lua script from RDB file! "
                         "BODY: %s", (char*)auxval->ptr);
                 }
+            } else if (!strncasecmp(auxkey->ptr,"lua", 3)) {
+                int version = atoi(((char*)auxval->ptr) + 3);
+                redisLua* l = findLuaVersion(version);
+                if (l->luaCreateFunctionCallback(l, NULL, auxval) == NULL) {
+                    rdbReportCorruptRDB(
+                        "Can't load Lua script from RDB file! "
+                        "BODY: %s", (char*)auxval->ptr);
+                }
+
             } else if (!strcasecmp(auxkey->ptr,"redis-ver")) {
                 serverLog(LL_NOTICE,"Loading RDB produced by version %s",
                     (char*)auxval->ptr);

@@ -4174,7 +4174,7 @@ redisLua* findLuaVersion(int version){
 }
 
 void scriptCommand(client *c) {
-    long long version = DEFAULT_LUA_VERSION;
+    long long version = server.defaultLuaVersion;
     int subCommandPos = 1;
     if(strcmp(c->argv[1]->ptr, "VERSION") == 0){
         if(getLongLongFromObject(c->argv[2], &version) != C_OK){
@@ -4199,7 +4199,7 @@ void scriptCommand(client *c) {
 }
 
 void evalCommand(client *c) {
-    long long version = DEFAULT_LUA_VERSION;
+    long long version = server.defaultLuaVersion;
     int scriptPos = 1;
     if(strcmp(c->argv[1]->ptr, "VERSION") == 0){
         if(getLongLongFromObject(c->argv[2], &version) != C_OK){
@@ -4223,7 +4223,7 @@ void evalCommand(client *c) {
 }
 
 void evalShaCommand(client *c){
-    long long version = DEFAULT_LUA_VERSION;
+    long long version = server.defaultLuaVersion;
     int scriptPos = 1;
     if(strcmp(c->argv[1]->ptr, "VERSION") == 0){
         if(getLongLongFromObject(c->argv[2], &version) != C_OK){

@@ -84,7 +84,7 @@ typedef long long ustime_t; /* microsecond time type. */
 #include "endianconv.h"
 #include "crc64.h"
 
-#define DEFAULT_LUA_VERSION     501
+#define DEFAULT_LUA_VERSION 501
 
 /* Error codes */
 #define C_OK                    0
@@ -1512,6 +1512,7 @@ struct redisServer {
                                         is down? */
     int cluster_config_file_lock_fd;   /* cluster config fd, will be flock */
     /* Scripting */
+    int defaultLuaVersion;
     list *luas;
     client *lua_client;   /* The "fake client" to query Redis from Lua */
     client *lua_caller;   /* The client running EVAL right now, or NULL */
