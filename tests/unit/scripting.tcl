@@ -603,73 +603,173 @@ start_server {tags {"scripting"}} {
 
 # Start a new server since the last test in this stanza will kill the
 # instance at all.
-start_server {tags {"scripting"}} {
-    test {Timedout read-only scripts can be killed by SCRIPT KILL} {
-        set rd [redis_deferring_client]
-        r config set lua-time-limit 10
-        $rd eval {while true do end} 0
-        after 200
-        catch {r ping} e
-        assert_match {BUSY*} $e
-        r script kill
-        after 200 ; # Give some time to Lua to call the hook again...
-        assert_equal [r ping] "PONG"
-    }
+foreach lua_version {504 501} {
+    start_server {tags {"scripting"}} {
 
-    test {Timedout script link is still usable after Lua returns} {
-        r config set lua-time-limit 10
-        r eval {for i=1,100000 do redis.call('ping') end return 'ok'} 0
-        r ping
-    } {PONG}
+        r config set default-lua-version $lua_version
+        puts [r config get default-lua-version]
 
-    test {Timedout scripts that modified data can't be killed by SCRIPT KILL} {
-        set rd [redis_deferring_client]
-        r config set lua-time-limit 10
-        $rd eval {redis.call('set',KEYS[1],'y'); while true do end} 1 x
-        after 200
-        catch {r ping} e
-        assert_match {BUSY*} $e
-        catch {r script kill} e
-        assert_match {UNKILLABLE*} $e
-        catch {r ping} e
-        assert_match {BUSY*} $e
-    }
+        test {Timedout read-only scripts can be killed by SCRIPT KILL} {
+            set rd [redis_deferring_client]
+            r config set lua-time-limit 10
+            $rd eval {while true do end} 0
+            after 200
+            catch {r ping} e
+            assert_match {BUSY*} $e
+            r script kill
+            after 200 ; # Give some time to Lua to call the hook again...
+            assert_equal [r ping] "PONG"
+        }
 
-    # Note: keep this test at the end of this server stanza because it
-    # kills the server.
-    test {SHUTDOWN NOSAVE can kill a timedout script anyway} {
-        # The server should be still unresponding to normal commands.
-        catch {r ping} e
-        assert_match {BUSY*} $e
-        catch {r shutdown nosave}
-        # Make sure the server was killed
-        catch {set rd [redis_deferring_client]} e
-        assert_match {*connection refused*} $e
+        test {Timedout script link is still usable after Lua returns} {
+            r config set lua-time-limit 10
+            r eval {for i=1,100000 do redis.call('ping') end return 'ok'} 0
+            r ping
+        } {PONG}
+
+        test {Timedout scripts that modified data can't be killed by SCRIPT KILL} {
+            set rd [redis_deferring_client]
+            r config set lua-time-limit 10
+            $rd eval {redis.call('set',KEYS[1],'y'); while true do end} 1 x
+            after 200
+            catch {r ping} e
+            assert_match {BUSY*} $e
+            catch {r script kill} e
+            assert_match {UNKILLABLE*} $e
+            catch {r ping} e
+            assert_match {BUSY*} $e
+        }
+
+        # Note: keep this test at the end of this server stanza because it
+        # kills the server.
+        test {SHUTDOWN NOSAVE can kill a timedout script anyway} {
+            # The server should be still unresponding to normal commands.
+            catch {r ping} e
+            assert_match {BUSY*} $e
+            catch {r shutdown nosave}
+            # Make sure the server was killed
+            catch {set rd [redis_deferring_client]} e
+            assert_match {*connection refused*} $e
+        }
     }
 }
 
-foreach cmdrepl {0 1} {
-    start_server {tags {"scripting repl"}} {
-        start_server {} {
-            if {$cmdrepl == 1} {
-                set rt "(commands replication)"
-            } else {
-                set rt "(scripts replication)"
-                r debug lua-always-replicate-commands 1
-            }
+foreach lua_version {504 501} {
+    foreach cmdrepl {0 1} {
+        start_server {tags {"scripting repl"}} {
+            start_server {} {
 
-            test "Before the replica connects we issue two EVAL commands $rt" {
-                # One with an error, but still executing a command.
-                # SHA is: 67164fc43fa971f76fd1aaeeaf60c1c178d25876
-                catch {
-                    r eval {redis.call('incr',KEYS[1]); redis.call('nonexisting')} 1 x
+                r config set default-lua-version $lua_version
+                puts [r config get default-lua-version]
+
+                if {$cmdrepl == 1} {
+                    set rt "(commands replication)"
+                } else {
+                    set rt "(scripts replication)"
+                    r debug lua-always-replicate-commands 1
                 }
-                # One command is correct:
-                # SHA is: 6f5ade10a69975e903c6d07b10ea44c6382381a5
-                r eval {return redis.call('incr',KEYS[1])} 1 x
-            } {2}
 
-            test "Connect a replica to the master instance $rt" {
+                test "Before the replica connects we issue two EVAL commands $rt" {
+                    # One with an error, but still executing a command.
+                    # SHA is: 67164fc43fa971f76fd1aaeeaf60c1c178d25876
+                    catch {
+                        r eval {redis.call('incr',KEYS[1]); redis.call('nonexisting')} 1 x
+                    }
+                    # One command is correct:
+                    # SHA is: 6f5ade10a69975e903c6d07b10ea44c6382381a5
+                    r eval {return redis.call('incr',KEYS[1])} 1 x
+                } {2}
+
+                test "Connect a replica to the master instance $rt" {
+                    r -1 slaveof [srv 0 host] [srv 0 port]
+                    wait_for_condition 50 100 {
+                        [s -1 role] eq {slave} &&
+                        [string match {*master_link_status:up*} [r -1 info replication]]
+                    } else {
+                        fail "Can't turn the instance into a replica"
+                    }
+                }
+
+                test "Now use EVALSHA against the master, with both SHAs $rt" {
+                    # The server should replicate successful and unsuccessful
+                    # commands as EVAL instead of EVALSHA.
+                    catch {
+                        r evalsha 67164fc43fa971f76fd1aaeeaf60c1c178d25876 1 x
+                    }
+                    r evalsha 6f5ade10a69975e903c6d07b10ea44c6382381a5 1 x
+                } {4}
+
+                test "If EVALSHA was replicated as EVAL, 'x' should be '4' $rt" {
+                    wait_for_condition 50 100 {
+                        [r -1 get x] eq {4}
+                    } else {
+                        fail "Expected 4 in x, but value is '[r -1 get x]'"
+                    }
+                }
+
+                test "Replication of script multiple pushes to list with BLPOP $rt" {
+                    set rd [redis_deferring_client]
+                    $rd brpop a 0
+                    r eval {
+                        redis.call("lpush",KEYS[1],"1");
+                        redis.call("lpush",KEYS[1],"2");
+                    } 1 a
+                    set res [$rd read]
+                    $rd close
+                    wait_for_condition 50 100 {
+                        [r -1 lrange a 0 -1] eq [r lrange a 0 -1]
+                    } else {
+                        fail "Expected list 'a' in replica and master to be the same, but they are respectively '[r -1 lrange a 0 -1]' and '[r lrange a 0 -1]'"
+                    }
+                    set res
+                } {a 1}
+
+                test "EVALSHA replication when first call is readonly $rt" {
+                    r del x
+                    r eval {if tonumber(ARGV[1]) > 0 then redis.call('incr', KEYS[1]) end} 1 x 0
+                    r evalsha 6e0e2745aa546d0b50b801a20983b70710aef3ce 1 x 0
+                    r evalsha 6e0e2745aa546d0b50b801a20983b70710aef3ce 1 x 1
+                    wait_for_condition 50 100 {
+                        [r -1 get x] eq {1}
+                    } else {
+                        fail "Expected 1 in x, but value is '[r -1 get x]'"
+                    }
+                }
+
+                test "Lua scripts using SELECT are replicated correctly $rt" {
+                    r eval {
+                        redis.call("set","foo1","bar1")
+                        redis.call("select","10")
+                        redis.call("incr","x")
+                        redis.call("select","11")
+                        redis.call("incr","z")
+                    } 0
+                    r eval {
+                        redis.call("set","foo1","bar1")
+                        redis.call("select","10")
+                        redis.call("incr","x")
+                        redis.call("select","11")
+                        redis.call("incr","z")
+                    } 0
+                    wait_for_condition 50 100 {
+                        [r -1 debug digest] eq [r debug digest]
+                    } else {
+                        fail "Master-Replica desync after Lua script using SELECT."
+                    }
+                }
+            }
+        }
+    }
+}
+
+foreach lua_version {504 501} {
+    start_server {tags {"scripting repl"}} {
+        start_server {overrides {appendonly yes aof-use-rdb-preamble no}} {
+
+            r config set default-lua-version $lua_version
+            puts [r config get default-lua-version]
+
+            test "Connect a replica to the master instance" {
                 r -1 slaveof [srv 0 host] [srv 0 port]
                 wait_for_condition 50 100 {
                     [s -1 role] eq {slave} &&
@@ -679,186 +779,110 @@ foreach cmdrepl {0 1} {
                 }
             }
 
-            test "Now use EVALSHA against the master, with both SHAs $rt" {
-                # The server should replicate successful and unsuccessful
-                # commands as EVAL instead of EVALSHA.
+            test "Redis.replicate_commands() must be issued before any write" {
+                r eval {
+                    redis.call('set','foo','bar');
+                    return redis.replicate_commands();
+                } 0
+            } {}
+
+            test "Redis.replicate_commands() must be issued before any write (2)" {
+                r eval {
+                    return redis.replicate_commands();
+                } 0
+            } {1}
+
+            test "Redis.set_repl() must be issued after replicate_commands()" {
+                r debug lua-always-replicate-commands 0
                 catch {
-                    r evalsha 67164fc43fa971f76fd1aaeeaf60c1c178d25876 1 x
-                }
-                r evalsha 6f5ade10a69975e903c6d07b10ea44c6382381a5 1 x
-            } {4}
+                    r eval {
+                        redis.set_repl(redis.REPL_ALL);
+                    } 0
+                } e
+                r debug lua-always-replicate-commands 1
+                set e
+            } {*only after turning on*}
 
-            test "If EVALSHA was replicated as EVAL, 'x' should be '4' $rt" {
-                wait_for_condition 50 100 {
-                    [r -1 get x] eq {4}
-                } else {
-                    fail "Expected 4 in x, but value is '[r -1 get x]'"
-                }
-            }
+            test "Redis.set_repl() don't accept invalid values" {
+                catch {
+                    r eval {
+                        redis.replicate_commands();
+                        redis.set_repl(12345);
+                    } 0
+                } e
+                set e
+            } {*Invalid*flags*}
 
-            test "Replication of script multiple pushes to list with BLPOP $rt" {
-                set rd [redis_deferring_client]
-                $rd brpop a 0
+            test "Test selective replication of certain Redis commands from Lua" {
+                r del a b c d
                 r eval {
-                    redis.call("lpush",KEYS[1],"1");
-                    redis.call("lpush",KEYS[1],"2");
-                } 1 a
-                set res [$rd read]
-                $rd close
-                wait_for_condition 50 100 {
-                    [r -1 lrange a 0 -1] eq [r lrange a 0 -1]
-                } else {
-                    fail "Expected list 'a' in replica and master to be the same, but they are respectively '[r -1 lrange a 0 -1]' and '[r lrange a 0 -1]'"
-                }
-                set res
-            } {a 1}
-
-            test "EVALSHA replication when first call is readonly $rt" {
-                r del x
-                r eval {if tonumber(ARGV[1]) > 0 then redis.call('incr', KEYS[1]) end} 1 x 0
-                r evalsha 6e0e2745aa546d0b50b801a20983b70710aef3ce 1 x 0
-                r evalsha 6e0e2745aa546d0b50b801a20983b70710aef3ce 1 x 1
-                wait_for_condition 50 100 {
-                    [r -1 get x] eq {1}
-                } else {
-                    fail "Expected 1 in x, but value is '[r -1 get x]'"
-                }
-            }
-
-            test "Lua scripts using SELECT are replicated correctly $rt" {
-                r eval {
-                    redis.call("set","foo1","bar1")
-                    redis.call("select","10")
-                    redis.call("incr","x")
-                    redis.call("select","11")
-                    redis.call("incr","z")
-                } 0
-                r eval {
-                    redis.call("set","foo1","bar1")
-                    redis.call("select","10")
-                    redis.call("incr","x")
-                    redis.call("select","11")
-                    redis.call("incr","z")
-                } 0
-                wait_for_condition 50 100 {
-                    [r -1 debug digest] eq [r debug digest]
-                } else {
-                    fail "Master-Replica desync after Lua script using SELECT."
-                }
-            }
-        }
-    }
-}
-
-start_server {tags {"scripting repl"}} {
-    start_server {overrides {appendonly yes aof-use-rdb-preamble no}} {
-        test "Connect a replica to the master instance" {
-            r -1 slaveof [srv 0 host] [srv 0 port]
-            wait_for_condition 50 100 {
-                [s -1 role] eq {slave} &&
-                [string match {*master_link_status:up*} [r -1 info replication]]
-            } else {
-                fail "Can't turn the instance into a replica"
-            }
-        }
-
-        test "Redis.replicate_commands() must be issued before any write" {
-            r eval {
-                redis.call('set','foo','bar');
-                return redis.replicate_commands();
-            } 0
-        } {}
-
-        test "Redis.replicate_commands() must be issued before any write (2)" {
-            r eval {
-                return redis.replicate_commands();
-            } 0
-        } {1}
-
-        test "Redis.set_repl() must be issued after replicate_commands()" {
-            r debug lua-always-replicate-commands 0
-            catch {
-                r eval {
+                    redis.replicate_commands();
+                    redis.call('set','a','1');
+                    redis.set_repl(redis.REPL_NONE);
+                    redis.call('set','b','2');
+                    redis.set_repl(redis.REPL_AOF);
+                    redis.call('set','c','3');
                     redis.set_repl(redis.REPL_ALL);
+                    redis.call('set','d','4');
                 } 0
-            } e
-            r debug lua-always-replicate-commands 1
-            set e
-        } {*only after turning on*}
 
-        test "Redis.set_repl() don't accept invalid values" {
-            catch {
-                r eval {
-                    redis.replicate_commands();
-                    redis.set_repl(12345);
-                } 0
-            } e
-            set e
-        } {*Invalid*flags*}
+                wait_for_condition 50 100 {
+                    [r -1 mget a b c d] eq {1 {} {} 4}
+                } else {
+                    fail "Only a and c should be replicated to replica"
+                }
 
-        test "Test selective replication of certain Redis commands from Lua" {
-            r del a b c d
-            r eval {
-                redis.replicate_commands();
-                redis.call('set','a','1');
-                redis.set_repl(redis.REPL_NONE);
-                redis.call('set','b','2');
-                redis.set_repl(redis.REPL_AOF);
-                redis.call('set','c','3');
-                redis.set_repl(redis.REPL_ALL);
-                redis.call('set','d','4');
-            } 0
+                # Master should have everything right now
+                assert {[r mget a b c d] eq {1 2 3 4}}
 
-            wait_for_condition 50 100 {
-                [r -1 mget a b c d] eq {1 {} {} 4}
-            } else {
-                fail "Only a and c should be replicated to replica"
+                # After an AOF reload only a, c and d should exist
+                r debug loadaof
+
+                assert {[r mget a b c d] eq {1 {} 3 4}}
             }
 
-            # Master should have everything right now
-            assert {[r mget a b c d] eq {1 2 3 4}}
+            test "PRNG is seeded randomly for command replication" {
+                set a [
+                    r eval {
+                        redis.replicate_commands();
+                        return math.random()*100000;
+                    } 0
+                ]
+                set b [
+                    r eval {
+                        redis.replicate_commands();
+                        return math.random()*100000;
+                    } 0
+                ]
+                assert {$a ne $b}
+            }
 
-            # After an AOF reload only a, c and d should exist
-            r debug loadaof
-
-            assert {[r mget a b c d] eq {1 {} 3 4}}
-        }
-
-        test "PRNG is seeded randomly for command replication" {
-            set a [
+            test "Using side effects is not a problem with command replication" {
                 r eval {
                     redis.replicate_commands();
-                    return math.random()*100000;
+                    redis.call('set','time',redis.call('time')[1])
                 } 0
-            ]
-            set b [
-                r eval {
-                    redis.replicate_commands();
-                    return math.random()*100000;
-                } 0
-            ]
-            assert {$a ne $b}
-        }
 
-        test "Using side effects is not a problem with command replication" {
-            r eval {
-                redis.replicate_commands();
-                redis.call('set','time',redis.call('time')[1])
-            } 0
+                assert {[r get time] ne {}}
 
-            assert {[r get time] ne {}}
-
-            wait_for_condition 50 100 {
-                [r get time] eq [r -1 get time]
-            } else {
-                fail "Time key does not match between master and replica"
+                wait_for_condition 50 100 {
+                    [r get time] eq [r -1 get time]
+                } else {
+                    fail "Time key does not match between master and replica"
+                }
             }
         }
     }
 }
 
 start_server {tags {"scripting"}} {
-    r script debug sync
-    r eval {return 'hello'} 0
-    r eval {return 'hello'} 0
+    foreach lua_version {504 501} {
+
+        r config set default-lua-version $lua_version
+        puts [r config get default-lua-version]
+
+        r script debug sync
+        r eval {return 'hello'} 0
+        r eval {return 'hello'} 0
+    }
 }
