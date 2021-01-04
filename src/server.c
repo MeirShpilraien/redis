@@ -2987,6 +2987,27 @@ void makeThreadKillable(void) {
     pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 }
 
+static void scriptingInitGlobals() {
+    server.lua_client = NULL;
+    server.lua_caller = NULL;
+    server.lua_cur_script = NULL;
+    server.lua_timedout = 0;
+
+    /* Create the (non connected) client that we use to execute Redis commands
+     * inside the Lua interpreter.
+     * Note: there is no need to create it again when this function is called
+     * by scriptingReset(). */
+    if (server.lua_client == NULL) {
+        server.lua_client = createClient(NULL);
+        server.lua_client->flags |= CLIENT_LUA;
+
+        /* We do not want to allow blocking commands inside Lua */
+        server.lua_client->flags |= CLIENT_DENY_BLOCKING;
+    }
+
+    server.luas = listCreate();
+}
+
 void initServer(void) {
     int j;
 
@@ -3203,8 +3224,12 @@ void initServer(void) {
     if (server.cluster_enabled) clusterInit();
     replicationScriptCacheInit();
     scriptingInitGlobals();
+#ifdef WITH_LUA_501
     listAddNodeHead(server.luas, scriptingInit());
+#endif
+#ifdef WITH_LUA_504
     listAddNodeHead(server.luas, scriptingInitLatest());
+#endif
     slowlogInit();
     latencyMonitorInit();
 }

@@ -127,8 +127,12 @@ configEnum sanitize_dump_payload_enum[] = {
 };
 
 configEnum lua_versions_enum[] = {
+#ifdef WITH_LUA_501
     {"501", 501},
+#endif
+#ifdef WITH_LUA_504
     {"504", 504},
+#endif
     {NULL, 0}
 };
 

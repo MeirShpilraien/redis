@@ -89,7 +89,7 @@ struct ldbState {
     sds cbuf;   /* Debugger client command buffer. */
     size_t maxlen;  /* Max var dump / reply length. */
     int maxlen_hint_sent; /* Did we already hint about "set maxlen"? */
-} ldb;
+} ldb = {0};
 
 /* ---------------------------------------------------------------------------
  * Utility functions.
@@ -1102,30 +1102,6 @@ void scriptingEnableGlobalsProtection(lua_State *lua) {
     sdsfree(code);
 }
 
-#ifndef LUA_LATEST
-void PUBLIC scriptingInitGlobals() {
-    server.lua_client = NULL;
-    server.lua_caller = NULL;
-    server.lua_cur_script = NULL;
-    server.lua_timedout = 0;
-    ldbInit();
-
-    /* Create the (non connected) client that we use to execute Redis commands
-     * inside the Lua interpreter.
-     * Note: there is no need to create it again when this function is called
-     * by scriptingReset(). */
-    if (server.lua_client == NULL) {
-        server.lua_client = createClient(NULL);
-        server.lua_client->flags |= CLIENT_LUA;
-
-        /* We do not want to allow blocking commands inside Lua */
-        server.lua_client->flags |= CLIENT_DENY_BLOCKING;
-    }
-
-    server.luas = listCreate();
-}
-#endif
-
 /* Initialize the scripting environment.
  *
  * This function is called the first time at server startup with
@@ -1137,6 +1113,8 @@ void PUBLIC scriptingInitGlobals() {
  *
  * However it is simpler to just call scriptingReset() that does just that. */
 PUBLIC redisLua* scriptingInit() {
+    ldbInit();
+
     redisLua* rl = zmalloc(sizeof(*rl));
 
     lua_State *lua = lua_open();
@@ -1823,14 +1801,16 @@ NULL
 
 /* Initialize Lua debugger data structures. */
 void ldbInit(void) {
-    ldb.conn = NULL;
-    ldb.active = 0;
-    ldb.logs = listCreate();
-    listSetFreeMethod(ldb.logs,(void (*)(void*))sdsfree);
-    ldb.children = listCreate();
-    ldb.src = NULL;
-    ldb.lines = 0;
-    ldb.cbuf = sdsempty();
+    if(!ldb.logs){
+        ldb.conn = NULL;
+        ldb.active = 0;
+        ldb.logs = listCreate();
+        listSetFreeMethod(ldb.logs,(void (*)(void*))sdsfree);
+        ldb.children = listCreate();
+        ldb.src = NULL;
+        ldb.lines = 0;
+        ldb.cbuf = sdsempty();
+    }
 }
 
 /* Remove all the pending messages in the specified list. */

@@ -1284,10 +1284,13 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
                 robj *body = dictGetVal(de);
                 sds key = sdsnew("lua");
                 if(l->version != DEFAULT_LUA_VERSION){
-                    sdscatfmt(key, "%d", l->version);
+                    key = sdscatfmt(key, "%I", l->version);
                 }
-                if (rdbSaveAuxField(rdb, key, sdslen(key), body->ptr, sdslen(body->ptr)) == -1)
+                if (rdbSaveAuxField(rdb, key, sdslen(key), body->ptr, sdslen(body->ptr)) == -1){
+                    sdsfree(key);
                     goto werr;
+                }
+                sdsfree(key);
             }
             dictReleaseIterator(di);
             di = NULL; /* So that we don't release it again on error. */
@@ -2446,7 +2449,7 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
                         "BODY: %s", (char*)auxval->ptr);
                 }
             } else if (!strncasecmp(auxkey->ptr,"lua", 3)) {
-                int version = atoi(((char*)auxval->ptr) + 3);
+                int version = atoi(((char*)auxkey->ptr) + 3);
                 redisLua* l = findLuaVersion(version);
                 if (l->luaCreateFunctionCallback(l, NULL, auxval) == NULL) {
                     rdbReportCorruptRDB(

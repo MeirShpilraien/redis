@@ -84,7 +84,17 @@ typedef long long ustime_t; /* microsecond time type. */
 #include "endianconv.h"
 #include "crc64.h"
 
+#ifndef DEFAULT_LUA_VERSION
+#ifdef WITH_LUA_501
 #define DEFAULT_LUA_VERSION 501
+#else
+#ifdef WITH_LUA_504
+#define DEFAULT_LUA_VERSION 504
+#else
+#define DEFAULT_LUA_VERSION 0
+#endif // WITH_LUA_504
+#endif // WITH_LUA_501
+#endif // DEFAULT_LUA_VERSION
 
 /* Error codes */
 #define C_OK                    0
@@ -2341,9 +2351,12 @@ int redis_check_rdb_main(int argc, char **argv, FILE *fp);
 int redis_check_aof_main(int argc, char **argv);
 
 /* Scripting */
-void scriptingInitGlobals();
+#ifdef WITH_LUA_501
 redisLua* scriptingInit();
+#endif
+#ifdef WITH_LUA_504
 redisLua* scriptingInitLatest();
+#endif
 
 /* Blocked clients */
 void processUnblockedClients(void);
