@@ -66,8 +66,8 @@ int ldbPendingChildren(redisLua* l);
 int ldbRemoveChild(redisLua* lua, pid_t pid);
 void scriptEvalShaCommand(redisLua *lua, client *c, int scriptPos);
 void scriptEvalCommand(redisLua *lua, client *c, int scriptPos);
-void scriptManageCommand(redisLua* l, client *c, int subCommandPos);
 int runGC(redisLua* l);
+void scriptingReset(redisLua *lua);
 
 /* Debugger shared state is stored inside this global structure. */
 #define LDB_BREAKPOINTS_MAX 64  /* Max number of breakpoints. */
@@ -1284,7 +1284,7 @@ PUBLIC redisLua* scriptingInit() {
     rl->ldbPendingChildrenCallback = ldbPendingChildren;
     rl->ldbKillForkedSessionsCallback = ldbKillForkedSessions;
     rl->luaCreateFunctionCallback = luaCreateFunction;
-    rl->scriptCommandCallback = scriptManageCommand;
+    rl->scriptingResetCallback = scriptingReset;
     rl->runGCCallback = runGC;
 
     return rl;
@@ -1709,7 +1709,7 @@ void scriptEvalCommand(redisLua *lua, client *c, int scriptPos) {
 }
 
 void scriptEvalShaCommand(redisLua *lua, client *c, int scriptPos) {
-    if (sdslen(c->argv[1]->ptr) != 40) {
+    if (sdslen(c->argv[scriptPos]->ptr) != 40) {
         /* We know that a match is not possible if the provided SHA is
          * not the right length. So we return an error ASAP, this way
          * evalGenericCommand() can be implemented without string length
@@ -1727,72 +1727,6 @@ void scriptEvalShaCommand(redisLua *lua, client *c, int scriptPos) {
 
 int runGC(redisLua* l) {
     return lua_gc(l->lua, LUA_GCCOUNT, 0);
-}
-
-void scriptManageCommand(redisLua* l, client *c, int subCommandPos) {
-    if (c->argc == 2 && !strcasecmp(c->argv[subCommandPos]->ptr,"help")) {
-        const char *help[] = {
-"DEBUG (yes|sync|no) -- Set the debug mode for subsequent scripts executed.",
-"EXISTS <sha1> [<sha1> ...] -- Return information about the existence of the scripts in the script cache.",
-"FLUSH -- Flush the Lua scripts cache. Very dangerous on replicas.",
-"KILL -- Kill the currently executing Lua script.",
-"LOAD <script> -- Load a script into the scripts cache, without executing it.",
-NULL
-        };
-        addReplyHelp(c, help);
-    } else if (c->argc == subCommandPos + 1 && !strcasecmp(c->argv[subCommandPos]->ptr,"flush")) {
-        scriptingReset(l);
-        addReply(c,shared.ok);
-        replicationScriptCacheFlush();
-        server.dirty++; /* Propagating this command is a good idea. */
-    } else if (c->argc >= subCommandPos + 1 && !strcasecmp(c->argv[subCommandPos]->ptr,"exists")) {
-        int j;
-
-        addReplyArrayLen(c, c->argc - subCommandPos - 1);
-        for (j = subCommandPos + 1; j < c->argc; j++) {
-            if (dictFind(l->lua_scripts,c->argv[j]->ptr))
-                addReply(c,shared.cone);
-            else
-                addReply(c,shared.czero);
-        }
-    } else if (c->argc == subCommandPos + 2 && !strcasecmp(c->argv[subCommandPos]->ptr,"load")) {
-        sds sha = luaCreateFunction(l, c, c->argv[subCommandPos + 1]);
-        if (sha == NULL) return; /* The error was sent by luaCreateFunction(). */
-        addReplyBulkCBuffer(c,sha,40);
-        forceCommandPropagation(c,PROPAGATE_REPL|PROPAGATE_AOF);
-    } else if (c->argc == subCommandPos + 1 && !strcasecmp(c->argv[subCommandPos]->ptr,"kill")) {
-        if (server.lua_caller == NULL) {
-            addReplyError(c,"-NOTBUSY No scripts in execution right now.");
-        } else if (server.lua_caller->flags & CLIENT_MASTER) {
-            addReplyError(c,"-UNKILLABLE The busy script was sent by a master instance in the context of replication and cannot be killed.");
-        } else if (server.lua_write_dirty) {
-            addReplyError(c,"-UNKILLABLE Sorry the script already executed write commands against the dataset. You can either wait the script termination or kill the server in a hard way using the SHUTDOWN NOSAVE command.");
-        } else {
-            server.lua_kill = 1;
-            addReply(c,shared.ok);
-        }
-    } else if (c->argc == subCommandPos + 2 && !strcasecmp(c->argv[subCommandPos]->ptr,"debug")) {
-        if (clientHasPendingReplies(c)) {
-            addReplyError(c,"SCRIPT DEBUG must be called outside a pipeline");
-            return;
-        }
-        if (!strcasecmp(c->argv[subCommandPos + 1]->ptr,"no")) {
-            ldbDisable(c);
-            addReply(c,shared.ok);
-        } else if (!strcasecmp(c->argv[subCommandPos + 1]->ptr,"yes")) {
-            ldbEnable(c);
-            addReply(c,shared.ok);
-        } else if (!strcasecmp(c->argv[subCommandPos + 1]->ptr,"sync")) {
-            ldbEnable(c);
-            addReply(c,shared.ok);
-            c->flags |= CLIENT_LUA_DEBUG_SYNC;
-        } else {
-            addReplyError(c,"Use SCRIPT DEBUG yes/sync/no");
-            return;
-        }
-    } else {
-        addReplySubcommandSyntaxError(c);
-    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -1823,7 +1757,6 @@ void ldbFlushLog(list *log) {
 
 /* Enable debug mode of Lua scripts for this client. */
 void ldbEnable(client *c) {
-    c->flags |= CLIENT_LUA_DEBUG;
     ldbFlushLog(ldb.logs);
     ldb.conn = c->conn;
     ldb.step = 1;
@@ -2021,6 +1954,7 @@ void ldbKillForkedSessions(redisLua* lua) {
 /* Wrapper for EVAL / EVALSHA that enables debugging, and makes sure
  * that when EVAL returns, whatever happened, the session is ended. */
 void evalGenericCommandWithDebugging(client *c, redisLua *lua, int evalsha, int scriptPos) {
+    ldbEnable(c);
     if (ldbStartSession(c)) {
         evalGenericCommand(lua, c, evalsha, scriptPos);
         ldbEndSession(c);

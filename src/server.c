@@ -4240,28 +4240,100 @@ redisLua* findLuaVersion(int version){
 }
 
 void scriptCommand(client *c) {
-    long long version = server.defaultLuaVersion;
-    int subCommandPos = 1;
-    if(strcmp(c->argv[1]->ptr, "VERSION") == 0){
-        if(getLongLongFromObject(c->argv[2], &version) != C_OK){
-            addReplyError(c,"Could not parse requested Lua version");
+    if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"help")) {
+        const char *help[] = {
+"DEBUG (yes|sync|no) -- Set the debug mode for subsequent scripts executed.",
+"EXISTS <sha1> [<sha1> ...] -- Return information about the existence of the scripts in the script cache.",
+"FLUSH -- Flush the Lua scripts cache. Very dangerous on replicas.",
+"KILL -- Kill the currently executing Lua script.",
+"LOAD <script> -- Load a script into the scripts cache, without executing it.",
+NULL
+        };
+        addReplyHelp(c, help);
+    } else if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"flush")) {
+        redisLua* luas[listLength(server.luas)];
+        size_t i = 0;
+        /* its not possible to call scriptingResetCallback while iterating over the lua list
+         * because scriptingResetCallback will modify the list, so we need to buffer all the
+         * luas interpreters and then call scriptingResetCallback*/
+        for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
+            redisLua* l  = listNodeValue(node);
+            luas[i++] = l;
+        }
+        while(i-- > 0){
+            luas[i]->scriptingResetCallback(luas[i]);
+        }
+        addReply(c,shared.ok);
+        replicationScriptCacheFlush();
+        server.dirty++; /* Propagating this command is a good idea. */
+    } else if (c->argc >= 2 && !strcasecmp(c->argv[1]->ptr,"exists")) {
+        int j;
+
+        addReplyArrayLen(c, c->argc - 2);
+        for (j = 2; j < c->argc; j++) {
+            int found = 0;
+            for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
+                redisLua* l  = listNodeValue(node);
+                if (dictFind(l->lua_scripts,c->argv[j]->ptr)){
+                    addReply(c,shared.cone);
+                    found = 1;
+                    break;
+                }
+            }
+            if(!found){
+                addReply(c,shared.czero);
+            }
+        }
+
+    } else if ((c->argc == 3 || c->argc == 4) && !strcasecmp(c->argv[1]->ptr,"load")) {
+        long long version = server.defaultLuaVersion;
+        if(c->argc == 4){
+            if(getLongLongFromObject(c->argv[2], &version) != C_OK){
+                addReplyError(c,"Could not parse requested Lua version");
+                return;
+            }
+        }
+        redisLua* l = findLuaVersion(version);
+        if(!l){
+            addReplyError(c,"Requested Lua version does not exists");
             return;
         }
-        subCommandPos = 3;
-        if(c->argc < 4){
-            addReplyErrorFormat(c,
-                "wrong number of arguments for '%s' command",
-                (char*)c->argv[0]->ptr);
+        sds sha = l->luaCreateFunctionCallback(l, c, c->argv[c->argc - 1]);
+        if (sha == NULL) return; /* The error was sent by luaCreateFunction(). */
+        addReplyBulkCBuffer(c,sha,40);
+        forceCommandPropagation(c,PROPAGATE_REPL|PROPAGATE_AOF);
+    } else if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"kill")) {
+        if (server.lua_caller == NULL) {
+            addReplyError(c,"-NOTBUSY No scripts in execution right now.");
+        } else if (server.lua_caller->flags & CLIENT_MASTER) {
+            addReplyError(c,"-UNKILLABLE The busy script was sent by a master instance in the context of replication and cannot be killed.");
+        } else if (server.lua_write_dirty) {
+            addReplyError(c,"-UNKILLABLE Sorry the script already executed write commands against the dataset. You can either wait the script termination or kill the server in a hard way using the SHUTDOWN NOSAVE command.");
+        } else {
+            server.lua_kill = 1;
+            addReply(c,shared.ok);
+        }
+    } else if (c->argc == 3 && !strcasecmp(c->argv[1]->ptr,"debug")) {
+        if (clientHasPendingReplies(c)) {
+            addReplyError(c,"SCRIPT DEBUG must be called outside a pipeline");
             return;
         }
+        if (!strcasecmp(c->argv[2]->ptr,"no")) {
+            c->flags &= ~(CLIENT_LUA_DEBUG|CLIENT_LUA_DEBUG_SYNC);
+            addReply(c,shared.ok);
+        } else if (!strcasecmp(c->argv[2]->ptr,"yes")) {
+            c->flags |= CLIENT_LUA_DEBUG;
+            addReply(c,shared.ok);
+        } else if (!strcasecmp(c->argv[2]->ptr,"sync")) {
+            c->flags |= CLIENT_LUA_DEBUG | CLIENT_LUA_DEBUG_SYNC;
+            addReply(c,shared.ok);
+        } else {
+            addReplyError(c,"Use SCRIPT DEBUG yes/sync/no");
+            return;
+        }
+    } else {
+        addReplySubcommandSyntaxError(c);
     }
-    redisLua* l = findLuaVersion(version);
-    printf("Found version %d\r\n", l->version);
-    if(!l){
-        addReplyError(c,"Requested Lua version does not exists");
-        return;
-    }
-    l->scriptCommandCallback(l, c, subCommandPos);
 }
 
 void evalCommand(client *c) {

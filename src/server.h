@@ -1128,7 +1128,7 @@ typedef struct redisLua {
     int (*ldbPendingChildrenCallback)(struct redisLua *lua);
     void (*ldbKillForkedSessionsCallback)(struct redisLua *lua);
     sds (*luaCreateFunctionCallback)(struct redisLua *lua, client *c, robj *body);
-    void (*scriptCommandCallback)(struct redisLua* l, client *c, int subCommandPos);
+    void (*scriptingResetCallback)(struct redisLua *lua);
     int (*runGCCallback)(struct redisLua* l);
 }redisLua;
 
