@@ -1125,13 +1125,17 @@ struct clusterState;
 #define CHILD_TYPE_LDB 3
 #define CHILD_TYPE_MODULE 4
 
+typedef enum requestedVersion {
+    requestedVersion_EQ, requestedVersion_GT, requestedVersion_LT, requestedVersion_LE, requestedVersion_GE
+}requestedVersion;
+
 typedef struct redisLua {
     lua_State *lua; /* The Lua interpreter. We use just one for all clients */
     int version;
     dict *lua_scripts;         /* A dictionary of SHA1 -> Lua scripts */
     unsigned long long lua_scripts_mem;  /* Cached scripts' memory + oh */
-    void (*evalCommandCallback)(struct redisLua *lua, client *c, int scriptPos);
-    void (*evalShaCommandCallback)(struct redisLua *lua, client *c, int scriptPos);
+    void (*evalCommandCallback)(struct redisLua *lua, client *c);
+    void (*evalShaCommandCallback)(struct redisLua *lua, client *c);
     int (*ldbRemoveChildCallback)(struct redisLua *lua, pid_t pid);
     int (*ldbPendingChildrenCallback)(struct redisLua *lua);
     void (*ldbKillForkedSessionsCallback)(struct redisLua *lua);
@@ -2592,7 +2596,7 @@ void clientCommand(client *c);
 void helloCommand(client *c);
 void evalCommand(client *c);
 void evalShaCommand(client *c);
-redisLua* findLuaVersion(int version);
+redisLua* findLuaVersion(int version, requestedVersion rv);
 void scriptCommand(client *c);
 void timeCommand(client *c);
 void bitopCommand(client *c);

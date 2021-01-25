@@ -1,4 +1,70 @@
 start_server {tags {"scripting"}} {
+    test {EVAL - Test set Lua version on the script} {
+        
+        set res [r eval {-- VERSION==5.1
+                return _VERSION
+            } 0]
+        assert_equal $res "Lua 5.1"
+
+        set res [r eval {-- VERSION==5.4
+                return _VERSION
+            } 0]
+        assert_equal $res "Lua 5.4"
+
+        set res [r eval {-- VERSION<=5.1
+                return _VERSION
+            } 0]
+        assert_equal $res "Lua 5.1"
+
+        set res [r eval {-- VERSION<=5.4
+                return _VERSION
+            } 0]
+        assert_equal $res "Lua 5.4"
+
+        set res [r eval {-- VERSION<5.4
+                return _VERSION
+            } 0]
+        assert_equal $res "Lua 5.1"
+
+        set res [r eval {-- VERSION>=5.1
+                return _VERSION
+            } 0]
+        assert_equal $res "Lua 5.4"
+
+        set res [r eval {-- VERSION>5.1
+                return _VERSION
+            } 0]
+        assert_equal $res "Lua 5.4"
+
+        set res [r eval {-- VERSION>=5.4
+                return _VERSION
+            } 0]
+        assert_equal $res "Lua 5.4"
+
+        catch { [r eval {-- VERSION<5.1
+                return _VERSION
+            } 0]
+        } e
+
+        assert_equal $e "ERR Requested Lua version does not exists"
+
+        catch { [r eval {-- VERSION>5.4
+                return _VERSION
+            } 0]
+        } e
+
+        assert_equal $e "ERR Requested Lua version does not exists"
+
+        catch { [r eval {-- VERSION==5.3
+                return _VERSION
+            } 0]
+        } e
+
+        assert_equal $e "ERR Requested Lua version does not exists"
+    }    
+}
+
+start_server {tags {"scripting"}} {
     foreach lua_version {504 501} {
 
         r config set default-lua-version $lua_version

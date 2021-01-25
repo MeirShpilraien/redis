@@ -53,7 +53,7 @@ int redis_math_randomseed (lua_State *L);
 void ldbInit(void);
 void ldbDisable(client *c);
 void ldbEnable(client *c);
-void evalGenericCommandWithDebugging(client *c, redisLua *lua, int evalsha, int scriptPos);
+void evalGenericCommandWithDebugging(client *c, redisLua *lua, int evalsha);
 void luaLdbLineHook(lua_State *lua, lua_Debug *ar);
 void ldbLog(sds entry);
 void ldbLogRedisReply(char *reply);
@@ -64,8 +64,8 @@ sds luaCreateFunction(redisLua *lua, client *c, robj *body);
 void ldbKillForkedSessions(redisLua* l);
 int ldbPendingChildren(redisLua* l);
 int ldbRemoveChild(redisLua* lua, pid_t pid);
-void scriptEvalShaCommand(redisLua *lua, client *c, int scriptPos);
-void scriptEvalCommand(redisLua *lua, client *c, int scriptPos);
+void scriptEvalShaCommand(redisLua *lua, client *c);
+void scriptEvalCommand(redisLua *lua, client *c);
 int runGC(redisLua* l);
 void scriptingReset(redisLua *lua, int async);
 
@@ -1494,7 +1494,7 @@ void resetLuaClient(void) {
     server.lua_client->flags &= ~CLIENT_MULTI;
 }
 
-void evalGenericCommand(redisLua *rlua, client *c, int evalsha, int scriptPos) {
+void evalGenericCommand(redisLua *rlua, client *c, int evalsha) {
     lua_State *lua = rlua->lua;
     char funcname[43];
     long long numkeys;
@@ -1521,7 +1521,7 @@ void evalGenericCommand(redisLua *rlua, client *c, int evalsha, int scriptPos) {
     server.in_eval = 1;
 
     /* Get the number of arguments that are keys */
-    if (getLongLongFromObjectOrReply(c,c->argv[scriptPos + 1],&numkeys,NULL) != C_OK)
+    if (getLongLongFromObjectOrReply(c,c->argv[2],&numkeys,NULL) != C_OK)
         return;
     if (numkeys > (c->argc - 3)) {
         addReplyError(c,"Number of keys can't be greater than number of args");
@@ -1537,11 +1537,11 @@ void evalGenericCommand(redisLua *rlua, client *c, int evalsha, int scriptPos) {
     funcname[1] = '_';
     if (!evalsha) {
         /* Hash the code if this is an EVAL call */
-        sha1hex(funcname+2,c->argv[scriptPos]->ptr,sdslen(c->argv[scriptPos]->ptr));
+        sha1hex(funcname+2,c->argv[1]->ptr,sdslen(c->argv[1]->ptr));
     } else {
         /* We already have the SHA if it is an EVALSHA */
         int j;
-        char *sha = c->argv[scriptPos]->ptr;
+        char *sha = c->argv[1]->ptr;
 
         /* Convert to lowercase. We don't use tolower since the function
          * managed to always show up in the profiler output consuming
@@ -1567,7 +1567,7 @@ void evalGenericCommand(redisLua *rlua, client *c, int evalsha, int scriptPos) {
             addReply(c, shared.noscripterr);
             return;
         }
-        if (luaCreateFunction(rlua, c, c->argv[scriptPos]) == NULL) {
+        if (luaCreateFunction(rlua, c, c->argv[1]) == NULL) {
             lua_pop(lua,1); /* remove the error handler from the stack. */
             /* The error is sent to the client by luaCreateFunction()
              * itself when it returns NULL. */
@@ -1580,8 +1580,8 @@ void evalGenericCommand(redisLua *rlua, client *c, int evalsha, int scriptPos) {
 
     /* Populate the argv and keys table accordingly to the arguments that
      * EVAL received. */
-    luaSetGlobalArray(lua,"KEYS",c->argv + scriptPos + 2,numkeys);
-    luaSetGlobalArray(lua,"ARGV",c->argv+ scriptPos + 2 + numkeys,c->argc - 2 - numkeys - scriptPos);
+    luaSetGlobalArray(lua,"KEYS",c->argv + 3,numkeys);
+    luaSetGlobalArray(lua,"ARGV",c->argv+ 3 + numkeys,c->argc - 3 - numkeys);
 
     /* Set a hook in order to be able to stop the script execution if it
      * is running for too much time.
@@ -1673,13 +1673,13 @@ void evalGenericCommand(redisLua *rlua, client *c, int evalsha, int scriptPos) {
      * flush our cache of scripts that can be replicated as EVALSHA, while
      * for AOF we need to do so every time we rewrite the AOF file. */
     if (evalsha && !server.lua_replicate_commands) {
-        if (!replicationScriptCacheExists(c->argv[scriptPos]->ptr, rlua->version)) {
+        if (!replicationScriptCacheExists(c->argv[1]->ptr, rlua->version)) {
             /* This script is not in our script cache, replicate it as
              * EVAL, then add it into the script cache, as from now on
              * slaves and AOF know about it. */
-            robj *script = dictFetchValue(rlua->lua_scripts,c->argv[scriptPos]->ptr);
+            robj *script = dictFetchValue(rlua->lua_scripts,c->argv[1]->ptr);
 
-            replicationScriptCacheAdd(c->argv[scriptPos]->ptr, rlua->version);
+            replicationScriptCacheAdd(c->argv[1]->ptr, rlua->version);
             serverAssertWithInfo(c,NULL,script != NULL);
 
             /* If the script did not produce any changes in the dataset we want
@@ -1703,15 +1703,15 @@ void evalGenericCommand(redisLua *rlua, client *c, int evalsha, int scriptPos) {
     server.in_eval = 0;
 }
 
-void scriptEvalCommand(redisLua *lua, client *c, int scriptPos) {
+void scriptEvalCommand(redisLua *lua, client *c) {
     if (!(c->flags & CLIENT_LUA_DEBUG))
-        evalGenericCommand(lua, c, 0, scriptPos);
+        evalGenericCommand(lua, c, 0);
     else
-        evalGenericCommandWithDebugging(c, lua, 0, scriptPos);
+        evalGenericCommandWithDebugging(c, lua, 0);
 }
 
-void scriptEvalShaCommand(redisLua *lua, client *c, int scriptPos) {
-    if (sdslen(c->argv[scriptPos]->ptr) != 40) {
+void scriptEvalShaCommand(redisLua *lua, client *c) {
+    if (sdslen(c->argv[1]->ptr) != 40) {
         /* We know that a match is not possible if the provided SHA is
          * not the right length. So we return an error ASAP, this way
          * evalGenericCommand() can be implemented without string length
@@ -1720,7 +1720,7 @@ void scriptEvalShaCommand(redisLua *lua, client *c, int scriptPos) {
         return;
     }
     if (!(c->flags & CLIENT_LUA_DEBUG))
-        evalGenericCommand(lua, c, 1, scriptPos);
+        evalGenericCommand(lua, c, 1);
     else {
         addReplyError(c,"Please use EVAL instead of EVALSHA for debugging");
         return;
@@ -1955,10 +1955,10 @@ void ldbKillForkedSessions(redisLua* lua) {
 
 /* Wrapper for EVAL / EVALSHA that enables debugging, and makes sure
  * that when EVAL returns, whatever happened, the session is ended. */
-void evalGenericCommandWithDebugging(client *c, redisLua *lua, int evalsha, int scriptPos) {
+void evalGenericCommandWithDebugging(client *c, redisLua *lua, int evalsha) {
     ldbEnable(c);
     if (ldbStartSession(c)) {
-        evalGenericCommand(lua, c, evalsha, scriptPos);
+        evalGenericCommand(lua, c, evalsha);
         ldbEndSession(c);
     } else {
         ldbDisable(c);

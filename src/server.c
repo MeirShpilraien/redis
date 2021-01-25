@@ -4309,14 +4309,64 @@ void echoCommand(client *c) {
     addReplyBulk(c,c->argv[1]);
 }
 
-redisLua* findLuaVersion(int version){
+int extracVersionFromScript(const char* script, requestedVersion* rv){
+    int majorVersion = server.defaultLuaVersion / 100;
+    int minorVersion = server.defaultLuaVersion % 10;
+    *rv = requestedVersion_EQ;
+
+    if(sscanf(script, "-- VERSION==%d.%d", &majorVersion, &minorVersion) == 2){
+        *rv = requestedVersion_EQ;
+    } else if(sscanf(script, "-- VERSION>=%d.%d", &majorVersion, &minorVersion) == 2) {
+        *rv = requestedVersion_GE;
+    } else if(sscanf(script, "-- VERSION>%d.%d", &majorVersion, &minorVersion) == 2) {
+        *rv = requestedVersion_GT;
+    } else if(sscanf(script, "-- VERSION<%d.%d", &majorVersion, &minorVersion) == 2) {
+        *rv = requestedVersion_LT;
+    } else if(sscanf(script, "-- VERSION<=%d.%d", &majorVersion, &minorVersion) == 2) {
+        *rv = requestedVersion_LE;
+    }
+
+    return 100 * majorVersion + minorVersion;
+}
+
+redisLua* findLuaVersion(int version, requestedVersion rv){
+    int searchedVersion = version;
+    int includeSearchedVersion = 1;
+
+    if (rv == requestedVersion_GT || rv == requestedVersion_GE) {
+        searchedVersion = INT_MAX;
+    }
+    if (rv == requestedVersion_LT) {
+        includeSearchedVersion = 0;
+    }
+
+    redisLua* foundVersion = NULL;
     for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
         redisLua* l  = listNodeValue(node);
-        if(l->version == version){
-            return l;
+
+        if (searchedVersion - l->version < 0 || (!includeSearchedVersion && searchedVersion - l->version == 0)){
+            continue;
+        }
+
+        int currDiff = foundVersion? searchedVersion - foundVersion->version : INT_MAX;
+        if(searchedVersion - l->version < currDiff){
+            foundVersion = l;
         }
     }
-    return NULL;
+
+    if (!foundVersion) {
+        return NULL;
+    }
+
+    if (rv == requestedVersion_EQ && foundVersion->version != version) {
+        return NULL;
+    }
+
+    if (rv == requestedVersion_GT && foundVersion->version == version) {
+        return NULL;
+    }
+
+    return foundVersion;
 }
 
 void scriptCommand(client *c) {
@@ -4383,14 +4433,11 @@ NULL
            if(!found) addReply(c,shared.czero);
        }
    } else if (c->argc == 3 && !strcasecmp(c->argv[1]->ptr,"load")) {
-       long long version = server.defaultLuaVersion;
-       if(c->argc == 4){
-           if(getLongLongFromObject(c->argv[2], &version) != C_OK){
-               addReplyError(c,"Could not parse requested Lua version");
-               return;
-           }
-       }
-       redisLua* l = findLuaVersion(version);
+       const char* script = c->argv[2]->ptr;
+       requestedVersion rv;
+       int version = extracVersionFromScript(script, &rv);
+
+       redisLua* l = findLuaVersion(version, rv);
        if(!l){
            addReplyError(c,"Requested Lua version does not exists");
            return;
@@ -4435,45 +4482,33 @@ NULL
 }
 
 void evalCommand(client *c) {
-    long long version = server.defaultLuaVersion;
-    int scriptPos = 1;
-    if(strcmp(c->argv[1]->ptr, "VERSION") == 0){
-        if(getLongLongFromObject(c->argv[2], &version) != C_OK){
-            addReplyError(c,"Could not parse requested Lua version");
-            return;
-        }
-        scriptPos = 3;
-        if(c->argc < 5){
-            addReplyErrorFormat(c,
-                "wrong number of arguments for '%s' command",
-                (char*)c->argv[0]->ptr);
-            return;
-        }
-    }
-    redisLua* l = findLuaVersion(version);
+    const char* script = c->argv[1]->ptr;
+    requestedVersion rv;
+    int version = extracVersionFromScript(script, &rv);
+
+    redisLua* l = findLuaVersion(version, rv);
     if(!l){
         addReplyError(c,"Requested Lua version does not exists");
         return;
     }
-    l->evalCommandCallback(l, c, scriptPos);
+    l->evalCommandCallback(l, c);
 }
 
 void evalShaCommand(client *c){
-    long long version = server.defaultLuaVersion;
-    int scriptPos = 1;
-    if(strcmp(c->argv[1]->ptr, "VERSION") == 0){
-        if(getLongLongFromObject(c->argv[2], &version) != C_OK){
-            addReplyError(c,"Could not parse requested Lua version");
-            return;
+    const char* sha = c->argv[1]->ptr;
+    redisLua* lua = NULL;
+    for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
+        redisLua* l  = listNodeValue(node);
+        if(dictFind(l->lua_scripts, sha)){
+            lua = l;
+            break;
         }
-        scriptPos = 3;
     }
-    redisLua* l = findLuaVersion(version);
-    if(!l){
-        addReplyError(c,"Requested Lua version does not exists");
+    if (!lua) {
+        addReplyError(c,"-NOSCRIPT No matching script. Please use EVAL");
         return;
     }
-    l->evalShaCommandCallback(l, c, scriptPos);
+    lua->evalShaCommandCallback(lua, c);
 }
 
 void timeCommand(client *c) {

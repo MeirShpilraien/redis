@@ -2458,7 +2458,10 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
                 if (rsi) rsi->repl_offset = strtoll(auxval->ptr,NULL,10);
             } else if (!strcasecmp(auxkey->ptr,"lua")) {
                 /* Load the script back in memory. */
-                redisLua* l = findLuaVersion(DEFAULT_LUA_VERSION);
+                redisLua* l = findLuaVersion(DEFAULT_LUA_VERSION, requestedVersion_EQ);
+                if(!l){
+                    rdbReportCorruptRDB("Was not compiled with Lua 5.1, can not load this RDB.");
+                }
                 if (l->luaCreateFunctionCallback(l, NULL, auxval) == NULL) {
                     rdbReportCorruptRDB(
                         "Can't load Lua script from RDB file! "
@@ -2466,7 +2469,10 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
                 }
             } else if (!strncasecmp(auxkey->ptr,"lua", 3)) {
                 int version = atoi(((char*)auxkey->ptr) + 3);
-                redisLua* l = findLuaVersion(version);
+                redisLua* l = findLuaVersion(version, requestedVersion_EQ);
+                if(!l){
+                    rdbReportCorruptRDB("Was not compiled with Lua %d, can not load this RDB.", version);
+                }
                 if (l->luaCreateFunctionCallback(l, NULL, auxval) == NULL) {
                     rdbReportCorruptRDB(
                         "Can't load Lua script from RDB file! "
