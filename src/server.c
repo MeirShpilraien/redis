@@ -59,6 +59,10 @@
 #include <sys/socket.h>
 #include <sys/resource.h>
 
+#ifdef __linux__
+#include <sys/mman.h>
+#endif
+
 /* Our shared "common" objects */
 
 struct sharedObjectsStruct shared;
@@ -159,6 +163,13 @@ struct redisServer server; /* Server global state */
  *              delay its execution as long as the kernel scheduler is giving
  *              us time. Note that commands that may trigger a DEL as a side
  *              effect (like SET) are not fast commands.
+ * 
+ * may-replicate: Command may produce replication traffic, but should be 
+ *                allowed under circumstances where write commands are disallowed. 
+ *                Examples include PUBLISH, which replicates pubsub messages,and 
+ *                EVAL, which may execute write commands, which are replicated, 
+ *                or may just execute read commands. A command can not be marked 
+ *                both "write" and "may-replicate"
  *
  * The following additional flags are only used in order to put commands
  * in a specific ACL category. Commands can have multiple ACL categories.
@@ -438,15 +449,15 @@ struct redisCommand redisCommandTable[] = {
 
     {"zunionstore",zunionstoreCommand,-4,
      "write use-memory @sortedset",
-     0,zunionInterDiffStoreGetKeys,0,0,0,0,0,0},
+     0,zunionInterDiffStoreGetKeys,1,1,1,0,0,0},
 
     {"zinterstore",zinterstoreCommand,-4,
      "write use-memory @sortedset",
-     0,zunionInterDiffStoreGetKeys,0,0,0,0,0,0},
+     0,zunionInterDiffStoreGetKeys,1,1,1,0,0,0},
 
     {"zdiffstore",zdiffstoreCommand,-4,
      "write use-memory @sortedset",
-     0,zunionInterDiffStoreGetKeys,0,0,0,0,0,0},
+     0,zunionInterDiffStoreGetKeys,1,1,1,0,0,0},
 
     {"zunion",zunionCommand,-3,
      "read-only @sortedset",
@@ -463,6 +474,10 @@ struct redisCommand redisCommandTable[] = {
     {"zrange",zrangeCommand,-4,
      "read-only @sortedset",
      0,NULL,1,1,1,0,0,0},
+
+    {"zrangestore",zrangestoreCommand,-5,
+     "write use-memory @sortedset",
+     0,NULL,1,2,1,0,0,0},
 
     {"zrangebyscore",zrangebyscoreCommand,-4,
      "read-only @sortedset",
@@ -810,7 +825,7 @@ struct redisCommand redisCommandTable[] = {
      0,NULL,0,0,0,0,0,0},
 
     {"publish",publishCommand,3,
-     "pub-sub ok-loading ok-stale fast",
+     "pub-sub ok-loading ok-stale fast may-replicate",
      0,NULL,0,0,0,0,0,0},
 
     {"pubsub",pubsubCommand,-2,
@@ -876,11 +891,11 @@ struct redisCommand redisCommandTable[] = {
     /* EVAL can modify the dataset, however it is not flagged as a write
      * command since we do the check while running commands from Lua. */
     {"eval",evalCommand,-3,
-     "no-script @scripting",
+     "no-script may-replicate @scripting",
      0,evalGetKeys,0,0,0,0,0,0},
 
     {"evalsha",evalShaCommand,-3,
-     "no-script @scripting",
+     "no-script may-replicate @scripting",
      0,evalGetKeys,0,0,0,0,0,0},
 
     {"slowlog",slowlogCommand,-2,
@@ -888,7 +903,7 @@ struct redisCommand redisCommandTable[] = {
      0,NULL,0,0,0,0,0,0},
 
     {"script",scriptCommand,-2,
-     "no-script @scripting",
+     "no-script may-replicate @scripting",
      0,NULL,0,0,0,0,0,0},
 
     {"time",timeCommand,1,
@@ -926,7 +941,7 @@ struct redisCommand redisCommandTable[] = {
 
     {"georadius_ro",georadiusroCommand,-6,
      "read-only @geo",
-     0,georadiusGetKeys,1,1,1,0,0,0},
+     0,NULL,1,1,1,0,0,0},
 
     {"georadiusbymember",georadiusbymemberCommand,-5,
      "write use-memory @geo",
@@ -934,7 +949,7 @@ struct redisCommand redisCommandTable[] = {
 
     {"georadiusbymember_ro",georadiusbymemberroCommand,-5,
      "read-only @geo",
-     0,georadiusGetKeys,1,1,1,0,0,0},
+     0,NULL,1,1,1,0,0,0},
 
     {"geohash",geohashCommand,-2,
      "read-only @geo",
@@ -969,7 +984,7 @@ struct redisCommand redisCommandTable[] = {
      * we claim that the representation, even if accessible, is an internal
      * affair, and the command is semantically read only. */
     {"pfcount",pfcountCommand,-2,
-     "read-only @hyperloglog",
+     "read-only may-replicate @hyperloglog",
      0,NULL,1,-1,1,0,0,0},
 
     {"pfmerge",pfmergeCommand,-2,
@@ -1001,11 +1016,11 @@ struct redisCommand redisCommandTable[] = {
 
     {"xread",xreadCommand,-4,
      "read-only @stream @blocking",
-     0,xreadGetKeys,1,1,1,0,0,0},
+     0,xreadGetKeys,0,0,0,0,0,0},
 
     {"xreadgroup",xreadCommand,-7,
      "write @stream @blocking",
-     0,xreadGetKeys,1,1,1,0,0,0},
+     0,xreadGetKeys,0,0,0,0,0,0},
 
     {"xgroup",xgroupCommand,-2,
      "write use-memory @stream",
@@ -1024,6 +1039,10 @@ struct redisCommand redisCommandTable[] = {
      0,NULL,1,1,1,0,0,0},
 
     {"xclaim",xclaimCommand,-6,
+     "write random fast @stream",
+     0,NULL,1,1,1,0,0,0},
+
+    {"xautoclaim",xautoclaimCommand,-6,
      "write random fast @stream",
      0,NULL,1,1,1,0,0,0},
 
@@ -1551,12 +1570,33 @@ void updateDictResizePolicy(void) {
         dictDisableResize();
 }
 
+const char *strChildType(int type) {
+    switch(type) {
+        case CHILD_TYPE_RDB: return "RDB";
+        case CHILD_TYPE_AOF: return "AOF";
+        case CHILD_TYPE_LDB: return "LDB";
+        case CHILD_TYPE_MODULE: return "MODULE";
+        default: return "Unknown";
+    }
+}
+
 /* Return true if there are active children processes doing RDB saving,
  * AOF rewriting, or some side process spawned by a loaded module. */
 int hasActiveChildProcess() {
-    return server.rdb_child_pid != -1 ||
-           server.aof_child_pid != -1 ||
-           server.module_child_pid != -1;
+    return server.child_pid != -1;
+}
+
+void resetChildState() {
+    server.child_type = CHILD_TYPE_NONE;
+    server.child_pid = -1;
+    server.stat_current_cow_bytes = 0;
+    updateDictResizePolicy();
+    closeChildInfoPipe();
+}
+
+/* Return if child type is mutual exclusive with other fork children */
+int isMutuallyExclusiveChildType(int type) {
+    return type == CHILD_TYPE_RDB || type == CHILD_TYPE_AOF || type == CHILD_TYPE_MODULE;
 }
 
 /* Return true if this instance has persistence completely turned off:
@@ -1878,20 +1918,23 @@ void checkChildrenDone(void) {
 
         if (pid == -1) {
             serverLog(LL_WARNING,"wait3() returned an error: %s. "
-                "rdb_child_pid = %d, aof_child_pid = %d, module_child_pid = %d",
+                "child_type: %s, child_pid = %d",
                 strerror(errno),
-                (int) server.rdb_child_pid,
-                (int) server.aof_child_pid,
-                (int) server.module_child_pid);
-        } else if (pid == server.rdb_child_pid) {
-            backgroundSaveDoneHandler(exitcode,bysignal);
+                strChildType(server.child_type),
+                (int) server.child_pid);
+        } else if (pid == server.child_pid) {
+            if (server.child_type == CHILD_TYPE_RDB) {
+                backgroundSaveDoneHandler(exitcode, bysignal);
+            } else if (server.child_type == CHILD_TYPE_AOF) {
+                backgroundRewriteDoneHandler(exitcode, bysignal);
+            } else if (server.child_type == CHILD_TYPE_MODULE) {
+                ModuleForkDoneHandler(exitcode, bysignal);
+            } else {
+                serverPanic("Unknown child type %d for child pid %d", server.child_type, server.child_pid);
+                exit(1);
+            }
             if (!bysignal && exitcode == 0) receiveChildInfo();
-        } else if (pid == server.aof_child_pid) {
-            backgroundRewriteDoneHandler(exitcode,bysignal);
-            if (!bysignal && exitcode == 0) receiveChildInfo();
-        } else if (pid == server.module_child_pid) {
-            ModuleForkDoneHandler(exitcode,bysignal);
-            if (!bysignal && exitcode == 0) receiveChildInfo();
+            resetChildState();
         } else {
             int processFound = 0;
             for(listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)) {
@@ -1904,12 +1947,10 @@ void checkChildrenDone(void) {
             if(!processFound){
                 serverLog(LL_WARNING,
                           "Warning, detected child with unmatched pid: %ld",
-                          (long)pid);
+                          (long) pid);
             }
 
         }
-        updateDictResizePolicy();
-        closeChildInfoPipe();
 
         /* start any pending forks immediately. */
         replicationStartPendingFork();
@@ -2087,6 +2128,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     }
     if (hasActiveChildProcess() || pendingLuaChildren)
     {
+        run_with_period(1000) receiveChildInfo();
         checkChildrenDone();
     } else {
         /* If there is not a background saving/rewrite in progress check if
@@ -2146,8 +2188,8 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
             flushAppendOnlyFile(0);
     }
 
-    /* Clear the paused clients flag if needed. */
-    clientsArePaused(); /* Don't check return value, just use the side effect.*/
+    /* Clear the paused clients state if needed. */
+    checkClientPauseTimeoutAndReturnIfPaused();
 
     /* Replication cron function -- used to reconnect to master,
      * detect transfer failures, start background RDB transfers and so forth. */
@@ -2251,6 +2293,7 @@ void whileBlockedCron() {
         activeDefragCycle();
 
         server.blocked_last_cron += hz_ms;
+
         /* Increment cronloop so that run_with_period works. */
         server.cronloops++;
     }
@@ -2343,8 +2386,12 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
      * during the previous event loop iteration. Note that we do this after
      * processUnblockedClients(), so if there are multiple pipelined WAITs
      * and the just unblocked WAIT gets blocked again, we don't have to wait
-     * a server cron cycle in absence of other event loop events. See #6623. */
-    if (server.get_ack_from_slaves) {
+     * a server cron cycle in absence of other event loop events. See #6623.
+     * 
+     * We also don't send the ACKs while clients are paused, since it can
+     * increment the replication backlog, they'll be sent after the pause
+     * if we are still the master. */
+    if (server.get_ack_from_slaves && !checkClientPauseTimeoutAndReturnIfPaused()) {
         robj *argv[3];
 
         argv[0] = createStringObject("REPLCONF",8);
@@ -2928,6 +2975,7 @@ int listenToPort(int port, int *fds, int *count) {
             return C_ERR;
         }
         anetNonBlock(NULL,fds[*count]);
+        anetCloexec(fds[*count]);
         (*count)++;
     }
     return C_OK;
@@ -3043,7 +3091,8 @@ void initServer(void) {
     server.ready_keys = listCreate();
     server.clients_waiting_acks = listCreate();
     server.get_ack_from_slaves = 0;
-    server.clients_paused = 0;
+    server.client_pause_type = 0;
+    server.paused_clients = listCreate();
     server.events_processed_while_blocked = 0;
     server.system_memory_size = zmalloc_get_memory_size();
     server.blocked_last_cron = 0;
@@ -3086,6 +3135,7 @@ void initServer(void) {
             exit(1);
         }
         anetNonBlock(NULL,server.sofd);
+        anetCloexec(server.sofd);
     }
 
     /* Abort if there are no listening sockets at all. */
@@ -3117,9 +3167,9 @@ void initServer(void) {
     server.in_eval = 0;
     server.in_exec = 0;
     server.propagate_in_transaction = 0;
-    server.rdb_child_pid = -1;
-    server.aof_child_pid = -1;
-    server.module_child_pid = -1;
+    server.client_pause_in_transaction = 0;
+    server.child_pid = -1;
+    server.child_type = CHILD_TYPE_NONE;
     server.rdb_child_type = RDB_CHILD_TYPE_NONE;
     server.rdb_pipe_conns = NULL;
     server.rdb_pipe_numconns = 0;
@@ -3129,7 +3179,7 @@ void initServer(void) {
     server.rdb_bgsave_scheduled = 0;
     server.child_info_pipe[0] = -1;
     server.child_info_pipe[1] = -1;
-    server.child_info_data.magic = 0;
+    server.child_info_nread = 0;
     aofRewriteBufferReset();
     server.aof_buf = sdsempty();
     server.lastsave = time(NULL); /* At startup we consider the DB saved. */
@@ -3141,6 +3191,7 @@ void initServer(void) {
     /* A few stats we don't want to reset: server startup time, and peak mem. */
     server.stat_starttime = time(NULL);
     server.stat_peak_memory = 0;
+    server.stat_current_cow_bytes = 0;
     server.stat_rdb_cow_bytes = 0;
     server.stat_aof_cow_bytes = 0;
     server.stat_module_cow_bytes = 0;
@@ -3289,6 +3340,8 @@ int populateCommandTableParseFlags(struct redisCommand *c, char *strflags) {
             c->flags |= CMD_FAST | CMD_CATEGORY_FAST;
         } else if (!strcasecmp(flag,"no-auth")) {
             c->flags |= CMD_NO_AUTH;
+        } else if (!strcasecmp(flag,"may-replicate")) {
+            c->flags |= CMD_MAY_REPLICATE;
         } else {
             /* Parse ACL categories here if the flag name starts with @. */
             uint64_t catflag;
@@ -3448,6 +3501,10 @@ void propagate(struct redisCommand *cmd, int dbid, robj **argv, int argc,
     if (server.in_exec && !server.propagate_in_transaction)
         execCommandPropagateMulti(dbid);
 
+    /* This needs to be unreachable since the dataset should be fixed during 
+     * client pause, otherwise data may be lossed during a failover. */
+    serverAssert(!(areClientsPaused() && !server.client_pause_in_transaction));
+
     if (server.aof_state != AOF_OFF && flags & PROPAGATE_AOF)
         feedAppendOnlyFile(cmd,dbid,argv,argc);
     if (flags & PROPAGATE_REPL)
@@ -3486,6 +3543,7 @@ void alsoPropagate(struct redisCommand *cmd, int dbid, robj **argv, int argc,
  * Redis command implementation in order to to force the propagation of a
  * specific command execution into AOF / Replication. */
 void forceCommandPropagation(client *c, int flags) {
+    serverAssert(c->cmd->flags & (CMD_WRITE | CMD_MAY_REPLICATE));
     if (flags & PROPAGATE_REPL) c->flags |= CLIENT_FORCE_REPL;
     if (flags & PROPAGATE_AOF) c->flags |= CLIENT_FORCE_AOF;
 }
@@ -3710,6 +3768,12 @@ void call(client *c, int flags) {
     }
     server.also_propagate = prev_also_propagate;
 
+    /* Client pause takes effect after a transaction has finished. This needs
+     * to be located after everything is propagated. */
+    if (!server.in_exec && server.client_pause_in_transaction) {
+        server.client_pause_in_transaction = 0;
+    }
+
     /* If the client has keys tracking enabled for client side caching,
      * make sure to remember the keys it fetched via this command. */
     if (c->cmd->flags & CMD_READONLY) {
@@ -3823,6 +3887,8 @@ int processCommand(client *c) {
                                (c->cmd->proc == execCommand && (c->mstate.cmd_inv_flags & CMD_STALE));
     int is_denyloading_command = !(c->cmd->flags & CMD_LOADING) ||
                                  (c->cmd->proc == execCommand && (c->mstate.cmd_inv_flags & CMD_LOADING));
+    int is_may_replicate_command = (c->cmd->flags & (CMD_WRITE | CMD_MAY_REPLICATE)) ||
+                                   (c->cmd->proc == execCommand && (c->mstate.cmd_flags & (CMD_WRITE | CMD_MAY_REPLICATE)));
 
     /* Check if the user is authenticated. This check is skipped in case
      * the default user is flagged as "nopass" and is active. */
@@ -4021,6 +4087,17 @@ int processCommand(client *c) {
         return C_OK;
     }
 
+    /* If the server is paused, block the client until
+     * the pause has ended. Replicas are never paused. */
+    if (!(c->flags & CLIENT_SLAVE) && 
+        ((server.client_pause_type == CLIENT_PAUSE_ALL) ||
+        (server.client_pause_type == CLIENT_PAUSE_WRITE && is_may_replicate_command)))
+    {
+        c->bpop.timeout = 0;
+        blockClient(c,BLOCKED_PAUSE);
+        return C_OK;       
+    }
+
     /* Exec the command */
     if (c->flags & CLIENT_MULTI &&
         c->cmd->proc != execCommand && c->cmd->proc != discardCommand &&
@@ -4096,25 +4173,28 @@ int prepareForShutdown(int flags) {
     /* Kill the saving child if there is a background saving in progress.
        We want to avoid race conditions, for instance our saving child may
        overwrite the synchronous saving did by SHUTDOWN. */
-    if (server.rdb_child_pid != -1) {
+    if (server.child_type == CHILD_TYPE_RDB) {
         serverLog(LL_WARNING,"There is a child saving an .rdb. Killing it!");
-        /* Note that, in killRDBChild, we call rdbRemoveTempFile that will
-         * do close fd(in order to unlink file actully) in background thread.
+        killRDBChild();
+        /* Note that, in killRDBChild normally has backgroundSaveDoneHandler
+         * doing it's cleanup, but in this case this code will not be reached,
+         * so we need to call rdbRemoveTempFile which will close fd(in order
+         * to unlink file actully) in background thread.
          * The temp rdb file fd may won't be closed when redis exits quickly,
          * but OS will close this fd when process exits. */
-        killRDBChild();
+        rdbRemoveTempFile(server.child_pid, 0);
     }
 
     /* Kill module child if there is one. */
-    if (server.module_child_pid != -1) {
+    if (server.child_type == CHILD_TYPE_MODULE) {
         serverLog(LL_WARNING,"There is a module fork child. Killing it!");
-        TerminateModuleForkChild(server.module_child_pid,0);
+        TerminateModuleForkChild(server.child_pid,0);
     }
 
     if (server.aof_state != AOF_OFF) {
         /* Kill the AOF saving child as the AOF we already have may be longer
          * but contains the full dataset anyway. */
-        if (server.aof_child_pid != -1) {
+        if (server.child_type == CHILD_TYPE_AOF) {
             /* If we have AOF enabled but haven't written the AOF yet, don't
              * shutdown or else the dataset will be lost. */
             if (server.aof_state == AOF_WAIT_REWRITE) {
@@ -4241,99 +4321,117 @@ redisLua* findLuaVersion(int version){
 
 void scriptCommand(client *c) {
     if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"help")) {
-        const char *help[] = {
-"DEBUG (yes|sync|no) -- Set the debug mode for subsequent scripts executed.",
-"EXISTS <sha1> [<sha1> ...] -- Return information about the existence of the scripts in the script cache.",
-"FLUSH -- Flush the Lua scripts cache. Very dangerous on replicas.",
-"KILL -- Kill the currently executing Lua script.",
-"LOAD <script> -- Load a script into the scripts cache, without executing it.",
+       const char *help[] = {
+"DEBUG (YES|SYNC|NO)",
+"    Set the debug mode for subsequent scripts executed.",
+"EXISTS <sha1> [<sha1> ...]",
+"    Return information about the existence of the scripts in the script cache.",
+"FLUSH [ASYNC|SYNC]",
+"    Flush the Lua scripts cache. Very dangerous on replicas.",
+"    When called without the optional mode argument, the behavior is determined by the",
+"    lazyfree-lazy-user-flush configuration directive. Valid modes are:",
+"    * ASYNC: Asynchronously flush the scripts cache.",
+"    * SYNC: Synchronously flush the scripts cache.",
+"KILL",
+"    Kill the currently executing Lua script.",
+"LOAD <script>",
+"    Load a script into the scripts cache without executing it.",
 NULL
-        };
-        addReplyHelp(c, help);
-    } else if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"flush")) {
-        redisLua* luas[listLength(server.luas)];
-        size_t i = 0;
-        /* its not possible to call scriptingResetCallback while iterating over the lua list
-         * because scriptingResetCallback will modify the list, so we need to buffer all the
-         * luas interpreters and then call scriptingResetCallback*/
-        for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
-            redisLua* l  = listNodeValue(node);
-            luas[i++] = l;
-        }
-        while(i-- > 0){
-            luas[i]->scriptingResetCallback(luas[i]);
-        }
-        addReply(c,shared.ok);
-        replicationScriptCacheFlush();
-        server.dirty++; /* Propagating this command is a good idea. */
-    } else if (c->argc >= 2 && !strcasecmp(c->argv[1]->ptr,"exists")) {
-        int j;
+       };
+       addReplyHelp(c, help);
+   } else if (c->argc >= 2 && !strcasecmp(c->argv[1]->ptr,"flush")) {
+       int async = 0;
+       if (c->argc == 3 && !strcasecmp(c->argv[2]->ptr,"sync")) {
+           async = 0;
+       } else if (c->argc == 3 && !strcasecmp(c->argv[2]->ptr,"async")) {
+           async = 1;
+       } else if (c->argc == 2) {
+           async = server.lazyfree_lazy_user_flush ? 1 : 0;
+       } else {
+           addReplyError(c,"SCRIPT FLUSH only support SYNC|ASYNC option");
+           return;
+       }
+       redisLua* luas[listLength(server.luas)];
+       size_t i = 0;
+       /* its not possible to call scriptingResetCallback while iterating over the lua list
+        * because scriptingResetCallback will modify the list, so we need to buffer all the
+        * luas interpreters and then call scriptingResetCallback*/
+       for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
+           redisLua* l  = listNodeValue(node);
+           luas[i++] = l;
+       }
+       while(i-- > 0){
+           luas[i]->scriptingResetCallback(luas[i], async);
+       }
+       addReply(c,shared.ok);
+       replicationScriptCacheFlush();
+       server.dirty++; /* Propagating this command is a good idea. */
+   } else if (c->argc >= 2 && !strcasecmp(c->argv[1]->ptr,"exists")) {
+       int j;
 
-        addReplyArrayLen(c, c->argc - 2);
-        for (j = 2; j < c->argc; j++) {
-            int found = 0;
-            for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
-                redisLua* l  = listNodeValue(node);
-                if (dictFind(l->lua_scripts,c->argv[j]->ptr)){
-                    addReply(c,shared.cone);
-                    found = 1;
-                    break;
-                }
-            }
-            if(!found){
-                addReply(c,shared.czero);
-            }
-        }
-
-    } else if ((c->argc == 3 || c->argc == 4) && !strcasecmp(c->argv[1]->ptr,"load")) {
-        long long version = server.defaultLuaVersion;
-        if(c->argc == 4){
-            if(getLongLongFromObject(c->argv[2], &version) != C_OK){
-                addReplyError(c,"Could not parse requested Lua version");
-                return;
-            }
-        }
-        redisLua* l = findLuaVersion(version);
-        if(!l){
-            addReplyError(c,"Requested Lua version does not exists");
-            return;
-        }
-        sds sha = l->luaCreateFunctionCallback(l, c, c->argv[c->argc - 1]);
-        if (sha == NULL) return; /* The error was sent by luaCreateFunction(). */
-        addReplyBulkCBuffer(c,sha,40);
-        forceCommandPropagation(c,PROPAGATE_REPL|PROPAGATE_AOF);
-    } else if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"kill")) {
-        if (server.lua_caller == NULL) {
-            addReplyError(c,"-NOTBUSY No scripts in execution right now.");
-        } else if (server.lua_caller->flags & CLIENT_MASTER) {
-            addReplyError(c,"-UNKILLABLE The busy script was sent by a master instance in the context of replication and cannot be killed.");
-        } else if (server.lua_write_dirty) {
-            addReplyError(c,"-UNKILLABLE Sorry the script already executed write commands against the dataset. You can either wait the script termination or kill the server in a hard way using the SHUTDOWN NOSAVE command.");
-        } else {
-            server.lua_kill = 1;
-            addReply(c,shared.ok);
-        }
-    } else if (c->argc == 3 && !strcasecmp(c->argv[1]->ptr,"debug")) {
-        if (clientHasPendingReplies(c)) {
-            addReplyError(c,"SCRIPT DEBUG must be called outside a pipeline");
-            return;
-        }
-        if (!strcasecmp(c->argv[2]->ptr,"no")) {
-            c->flags &= ~(CLIENT_LUA_DEBUG|CLIENT_LUA_DEBUG_SYNC);
-            addReply(c,shared.ok);
-        } else if (!strcasecmp(c->argv[2]->ptr,"yes")) {
-            c->flags |= CLIENT_LUA_DEBUG;
-            addReply(c,shared.ok);
-        } else if (!strcasecmp(c->argv[2]->ptr,"sync")) {
-            c->flags |= CLIENT_LUA_DEBUG | CLIENT_LUA_DEBUG_SYNC;
-            addReply(c,shared.ok);
-        } else {
-            addReplyError(c,"Use SCRIPT DEBUG yes/sync/no");
-            return;
-        }
-    } else {
-        addReplySubcommandSyntaxError(c);
-    }
+       addReplyArrayLen(c, c->argc-2);
+       for (j = 2; j < c->argc; j++) {
+           int found = 0;
+           for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
+               redisLua* l  = listNodeValue(node);
+               if (dictFind(l->lua_scripts,c->argv[j]->ptr)){
+                   addReply(c,shared.cone);
+                   found = 1;
+                   break;
+               }
+           }
+           if(!found) addReply(c,shared.czero);
+       }
+   } else if (c->argc == 3 && !strcasecmp(c->argv[1]->ptr,"load")) {
+       long long version = server.defaultLuaVersion;
+       if(c->argc == 4){
+           if(getLongLongFromObject(c->argv[2], &version) != C_OK){
+               addReplyError(c,"Could not parse requested Lua version");
+               return;
+           }
+       }
+       redisLua* l = findLuaVersion(version);
+       if(!l){
+           addReplyError(c,"Requested Lua version does not exists");
+           return;
+       }
+       sds sha = l->luaCreateFunctionCallback(l, c, c->argv[c->argc - 1]);
+       if (sha == NULL) return; /* The error was sent by luaCreateFunction(). */
+       addReplyBulkCBuffer(c,sha,40);
+       forceCommandPropagation(c,PROPAGATE_REPL|PROPAGATE_AOF);
+   } else if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"kill")) {
+       if (server.lua_caller == NULL) {
+           addReplyError(c,"-NOTBUSY No scripts in execution right now.");
+       } else if (server.lua_caller->flags & CLIENT_MASTER) {
+           addReplyError(c,"-UNKILLABLE The busy script was sent by a master instance in the context of replication and cannot be killed.");
+       } else if (server.lua_write_dirty) {
+           addReplyError(c,"-UNKILLABLE Sorry the script already executed write commands against the dataset. You can either wait the script termination or kill the server in a hard way using the SHUTDOWN NOSAVE command.");
+       } else {
+           server.lua_kill = 1;
+           addReply(c,shared.ok);
+       }
+   } else if (c->argc == 3 && !strcasecmp(c->argv[1]->ptr,"debug")) {
+       if (clientHasPendingReplies(c)) {
+           addReplyError(c,"SCRIPT DEBUG must be called outside a pipeline");
+           return;
+       }
+       if (!strcasecmp(c->argv[2]->ptr,"no")) {
+           c->flags &= ~(CLIENT_LUA_DEBUG|CLIENT_LUA_DEBUG_SYNC);
+           addReply(c,shared.ok);
+       } else if (!strcasecmp(c->argv[2]->ptr,"yes")) {
+           c->flags |= CLIENT_LUA_DEBUG;
+           addReply(c,shared.ok);
+       } else if (!strcasecmp(c->argv[2]->ptr,"sync")) {
+           c->flags |= CLIENT_LUA_DEBUG | CLIENT_LUA_DEBUG_SYNC;
+           addReply(c,shared.ok);
+           c->flags |= CLIENT_LUA_DEBUG_SYNC;
+       } else {
+           addReplyError(c,"Use SCRIPT DEBUG YES/SYNC/NO");
+           return;
+       }
+   } else {
+       addReplySubcommandSyntaxError(c);
+   }
 }
 
 void evalCommand(client *c) {
@@ -4425,6 +4523,7 @@ void addReplyCommand(client *c, struct redisCommand *cmd) {
         flagcount += addReplyCommandFlag(c,cmd,CMD_ASKING, "asking");
         flagcount += addReplyCommandFlag(c,cmd,CMD_FAST, "fast");
         flagcount += addReplyCommandFlag(c,cmd,CMD_NO_AUTH, "no_auth");
+        flagcount += addReplyCommandFlag(c,cmd,CMD_MAY_REPLICATE, "may_replicate");
         if (cmdHasMovableKeys(cmd)) {
             addReplyStatus(c, "movablekeys");
             flagcount += 1;
@@ -4446,10 +4545,14 @@ void commandCommand(client *c) {
 
     if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"help")) {
         const char *help[] = {
-"(no subcommand) -- Return details about all Redis commands.",
-"COUNT -- Return the total number of commands in this Redis server.",
-"GETKEYS <full-command> -- Return the keys from a full Redis command.",
-"INFO [command-name ...] -- Return details about multiple Redis commands.",
+"(no subcommand)",
+"    Return details about all Redis commands.",
+"COUNT",
+"    Return the total number of commands in this Redis server.",
+"GETKEYS <full-command>",
+"    Return the keys from a full Redis command.",
+"INFO [<command-name> ...]",
+"    Return details about multiple Redis commands.",
 NULL
         };
         addReplyHelp(c, help);
@@ -4789,6 +4892,7 @@ sds genRedisInfoString(const char *section) {
         info = sdscatprintf(info,
             "# Persistence\r\n"
             "loading:%d\r\n"
+            "current_cow_size:%zu\r\n"
             "rdb_changes_since_last_save:%lld\r\n"
             "rdb_bgsave_in_progress:%d\r\n"
             "rdb_last_save_time:%jd\r\n"
@@ -4806,25 +4910,26 @@ sds genRedisInfoString(const char *section) {
             "aof_last_cow_size:%zu\r\n"
             "module_fork_in_progress:%d\r\n"
             "module_fork_last_cow_size:%zu\r\n",
-            server.loading,
+            (int)server.loading,
+            server.stat_current_cow_bytes,
             server.dirty,
-            server.rdb_child_pid != -1,
+            server.child_type == CHILD_TYPE_RDB,
             (intmax_t)server.lastsave,
             (server.lastbgsave_status == C_OK) ? "ok" : "err",
             (intmax_t)server.rdb_save_time_last,
-            (intmax_t)((server.rdb_child_pid == -1) ?
+            (intmax_t)((server.child_type != CHILD_TYPE_RDB) ?
                 -1 : time(NULL)-server.rdb_save_time_start),
             server.stat_rdb_cow_bytes,
             server.aof_state != AOF_OFF,
-            server.aof_child_pid != -1,
+            server.child_type == CHILD_TYPE_AOF,
             server.aof_rewrite_scheduled,
             (intmax_t)server.aof_rewrite_time_last,
-            (intmax_t)((server.aof_child_pid == -1) ?
+            (intmax_t)((server.child_type != CHILD_TYPE_AOF) ?
                 -1 : time(NULL)-server.aof_rewrite_time_start),
             (server.aof_lastbgrewrite_status == C_OK) ? "ok" : "err",
             (server.aof_last_write_status == C_OK) ? "ok" : "err",
             server.stat_aof_cow_bytes,
-            server.module_child_pid != -1,
+            server.child_type == CHILD_TYPE_MODULE,
             server.stat_module_cow_bytes);
 
         if (server.aof_enabled) {
@@ -5257,6 +5362,21 @@ void monitorCommand(client *c) {
 
 /* =================================== Main! ================================ */
 
+int checkIgnoreWarning(const char *warning) {
+    int argc, j;
+    sds *argv = sdssplitargs(server.ignore_warnings, &argc);
+    if (argv == NULL)
+        return 0;
+
+    for (j = 0; j < argc; j++) {
+        char *flag = argv[j];
+        if (!strcasecmp(flag, warning))
+            break;
+    }
+    sdsfreesplitres(argv,argc);
+    return j < argc;
+}
+
 #ifdef __linux__
 int linuxOvercommitMemoryValue(void) {
     FILE *fp = fopen("/proc/sys/vm/overcommit_memory","r");
@@ -5280,6 +5400,113 @@ void linuxMemoryWarnings(void) {
         serverLog(LL_WARNING,"WARNING you have Transparent Huge Pages (THP) support enabled in your kernel. This will create latency and memory usage issues with Redis. To fix this issue run the command 'echo madvise > /sys/kernel/mm/transparent_hugepage/enabled' as root, and add it to your /etc/rc.local in order to retain the setting after a reboot. Redis must be restarted after THP is disabled (set to 'madvise' or 'never').");
     }
 }
+
+#ifdef __arm64__
+
+/* Get size in kilobytes of the Shared_Dirty pages of the calling process for the
+ * memory map corresponding to the provided address, or -1 on error. */
+static int smapsGetSharedDirty(unsigned long addr) {
+    int ret, in_mapping = 0, val = -1;
+    unsigned long from, to;
+    char buf[64];
+    FILE *f;
+
+    f = fopen("/proc/self/smaps", "r");
+    serverAssert(f);
+
+    while (1) {
+        if (!fgets(buf, sizeof(buf), f))
+            break;
+
+        ret = sscanf(buf, "%lx-%lx", &from, &to);
+        if (ret == 2)
+            in_mapping = from <= addr && addr < to;
+
+        if (in_mapping && !memcmp(buf, "Shared_Dirty:", 13)) {
+            ret = sscanf(buf, "%*s %d", &val);
+            serverAssert(ret == 1);
+            break;
+        }
+    }
+
+    fclose(f);
+    return val;
+}
+
+/* Older arm64 Linux kernels have a bug that could lead to data corruption
+ * during background save in certain scenarios. This function checks if the
+ * kernel is affected.
+ * The bug was fixed in commit ff1712f953e27f0b0718762ec17d0adb15c9fd0b
+ * titled: "arm64: pgtable: Ensure dirty bit is preserved across pte_wrprotect()"
+ * Return 1 if the kernel seems to be affected, and 0 otherwise. */
+int linuxMadvFreeForkBugCheck(void) {
+    int ret, pipefd[2];
+    pid_t pid;
+    char *p, *q, bug_found = 0;
+    const long map_size = 3 * 4096;
+
+    /* Create a memory map that's in our full control (not one used by the allocator). */
+    p = mmap(NULL, map_size, PROT_READ, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    serverAssert(p != MAP_FAILED);
+
+    q = p + 4096;
+
+    /* Split the memory map in 3 pages by setting their protection as RO|RW|RO to prevent
+     * Linux from merging this memory map with adjacent VMAs. */
+    ret = mprotect(q, 4096, PROT_READ | PROT_WRITE);
+    serverAssert(!ret);
+
+    /* Write to the page once to make it resident */
+    *(volatile char*)q = 0;
+
+    /* Tell the kernel that this page is free to be reclaimed. */
+#ifndef MADV_FREE
+#define MADV_FREE 8
+#endif
+    ret = madvise(q, 4096, MADV_FREE);
+    serverAssert(!ret);
+
+    /* Write to the page after being marked for freeing, this is supposed to take
+     * ownership of that page again. */
+    *(volatile char*)q = 0;
+
+    /* Create a pipe for the child to return the info to the parent. */
+    ret = pipe(pipefd);
+    serverAssert(!ret);
+
+    /* Fork the process. */
+    pid = fork();
+    serverAssert(pid >= 0);
+    if (!pid) {
+        /* Child: check if the page is marked as dirty, expecing 4 (kB).
+         * A value of 0 means the kernel is affected by the bug. */
+        if (!smapsGetSharedDirty((unsigned long)q))
+            bug_found = 1;
+
+        ret = write(pipefd[1], &bug_found, 1);
+        serverAssert(ret == 1);
+
+        exit(0);
+    } else {
+        /* Read the result from the child. */
+        ret = read(pipefd[0], &bug_found, 1);
+        serverAssert(ret == 1);
+
+        /* Reap the child pid. */
+        serverAssert(waitpid(pid, NULL, 0) == pid);
+    }
+
+    /* Cleanup */
+    ret = close(pipefd[0]);
+    serverAssert(!ret);
+    ret = close(pipefd[1]);
+    serverAssert(!ret);
+    ret = munmap(p, map_size);
+    serverAssert(!ret);
+
+    return bug_found;
+}
+#endif /* __arm64__ */
 #endif /* __linux__ */
 
 void createPidFile(void) {
@@ -5471,7 +5698,7 @@ void setupChildSignalHandlers(void) {
  * of the parent process, e.g. fd(socket or flock) etc.
  * should close the resources not used by the child process, so that if the
  * parent restarts it can bind/lock despite the child possibly still running. */
-void closeClildUnusedResourceAfterFork() {
+void closeChildUnusedResourceAfterFork() {
     closeListeningSockets(0);
     if (server.cluster_enabled && server.cluster_config_file_lock_fd != -1)
         close(server.cluster_config_file_lock_fd);  /* don't care if this fails */
@@ -5484,6 +5711,13 @@ void closeClildUnusedResourceAfterFork() {
 
 /* purpose is one of CHILD_TYPE_ types */
 int redisFork(int purpose) {
+    if (isMutuallyExclusiveChildType(purpose)) {
+        if (hasActiveChildProcess())
+            return -1;
+
+        openChildInfoPipe();
+    }
+
     int childpid;
     long long start = ustime();
     if ((childpid = fork()) == 0) {
@@ -5491,7 +5725,7 @@ int redisFork(int purpose) {
         server.in_fork_child = purpose;
         setOOMScoreAdj(CONFIG_OOM_BGCHILD);
         setupChildSignalHandlers();
-        closeClildUnusedResourceAfterFork();
+        closeChildUnusedResourceAfterFork();
     } else {
         /* Parent */
         server.stat_total_forks++;
@@ -5499,23 +5733,38 @@ int redisFork(int purpose) {
         server.stat_fork_rate = (double) zmalloc_used_memory() * 1000000 / server.stat_fork_time / (1024*1024*1024); /* GB per second. */
         latencyAddSampleIfNeeded("fork",server.stat_fork_time/1000);
         if (childpid == -1) {
+            if (isMutuallyExclusiveChildType(purpose)) closeChildInfoPipe();
             return -1;
         }
+
+        /* The child_pid and child_type are only for mutual exclusive children.
+         * other child types should handle and store their pid's in dedicated variables.
+         *
+         * Today, we allows CHILD_TYPE_LDB to run in parallel with the other fork types:
+         * - it isn't used for production, so it will not make the server be less efficient
+         * - used for debugging, and we don't want to block it from running while other
+         *   forks are running (like RDB and AOF) */
+        if (isMutuallyExclusiveChildType(purpose)) {
+            server.child_pid = childpid;
+            server.child_type = purpose;
+            server.stat_current_cow_bytes = 0;
+        }
+
+        updateDictResizePolicy();
     }
     return childpid;
 }
 
-void sendChildCOWInfo(int ptype, char *pname) {
+void sendChildCOWInfo(int ptype, int on_exit, char *pname) {
     size_t private_dirty = zmalloc_get_private_dirty(-1);
 
     if (private_dirty) {
-        serverLog(LL_NOTICE,
+        serverLog(on_exit ? LL_NOTICE : LL_VERBOSE,
             "%s: %zu MB of memory used by copy-on-write",
             pname, private_dirty/(1024*1024));
     }
 
-    server.child_info_data.cow_size = private_dirty;
-    sendChildInfo(ptype);
+    sendChildInfo(ptype, on_exit, private_dirty);
 }
 
 void memtest(size_t megabytes, int passes);
@@ -5573,7 +5822,7 @@ void loadDataFromDisk(void) {
 void redisOutOfMemoryHandler(size_t allocation_size) {
     serverLog(LL_WARNING,"Out Of Memory allocating %zu bytes!",
         allocation_size);
-    serverPanic("Redis aborting for OUT OF MEMORY. Allocating %zu bytes!", 
+    serverPanic("Redis aborting for OUT OF MEMORY. Allocating %zu bytes!",
         allocation_size);
 }
 
@@ -5730,6 +5979,12 @@ int main(int argc, char **argv) {
     init_genrand64(((long long) tv.tv_sec * 1000000 + tv.tv_usec) ^ getpid());
     crc64_init();
 
+    /* Store umask value. Because umask(2) only offers a set-and-get API we have
+     * to reset it and restore it back. We do this early to avoid a potential
+     * race condition with threads that could be creating files or directories.
+     */
+    umask(server.umask = umask(0777));
+
     uint8_t hashseed[16];
     getRandomBytes(hashseed,sizeof(hashseed));
     dictSetHashFunctionSeed(hashseed);
@@ -5856,7 +6111,16 @@ int main(int argc, char **argv) {
         serverLog(LL_WARNING,"Server initialized");
     #ifdef __linux__
         linuxMemoryWarnings();
-    #endif
+    #if defined (__arm64__)
+        if (linuxMadvFreeForkBugCheck()) {
+            serverLog(LL_WARNING,"WARNING Your kernel has a bug that could lead to data corruption during background save. Please upgrade to the latest stable kernel.");
+            if (!checkIgnoreWarning("ARM64-COW-BUG")) {
+                serverLog(LL_WARNING,"Redis will now exit to prevent data corruption. Note that it is possible to suppress this warning by setting the following config: ignore-warnings ARM64-COW-BUG");
+                exit(1);
+            }
+        }
+    #endif /* __arm64__ */
+    #endif /* __linux__ */
         moduleInitModulesSystemLast();
         moduleLoadFromQueue();
         ACLLoadUsersAtStartup();

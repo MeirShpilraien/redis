@@ -67,7 +67,7 @@ int ldbRemoveChild(redisLua* lua, pid_t pid);
 void scriptEvalShaCommand(redisLua *lua, client *c, int scriptPos);
 void scriptEvalCommand(redisLua *lua, client *c, int scriptPos);
 int runGC(redisLua* l);
-void scriptingReset(redisLua *lua);
+void scriptingReset(redisLua *lua, int async);
 
 /* Debugger shared state is stored inside this global structure. */
 #define LDB_BREAKPOINTS_MAX 64  /* Max number of breakpoints. */
@@ -419,9 +419,9 @@ void luaReplyToRedisReply(client *c, lua_State *lua) {
             lua_pushnil(lua); /* Use nil to start iteration. */
             while (lua_next(lua,-2)) {
                 /* Stack now: table, key, value */
-                luaReplyToRedisReply(c, lua); /* Return value. */
-                lua_pushvalue(lua,-1);        /* Dup key before consuming. */
+                lua_pushvalue(lua,-2);        /* Dup key before consuming. */
                 luaReplyToRedisReply(c, lua); /* Return key. */
+                luaReplyToRedisReply(c, lua); /* Return value. */
                 /* Stack now: table, key. */
                 maplen++;
             }
@@ -703,11 +703,11 @@ int luaRedisGenericCommand(lua_State *lua, int raise_error) {
         if (getNodeByQuery(c,c->cmd,c->argv,c->argc,NULL,&error_code) !=
                            server.cluster->myself)
         {
-            if (error_code == CLUSTER_REDIR_DOWN_RO_STATE) { 
+            if (error_code == CLUSTER_REDIR_DOWN_RO_STATE) {
                 luaPushError(lua,
                     "Lua script attempted to execute a write command while the "
                     "cluster is down and readonly");
-            } else if (error_code == CLUSTER_REDIR_DOWN_STATE) { 
+            } else if (error_code == CLUSTER_REDIR_DOWN_STATE) {
                 luaPushError(lua,
                     "Lua script attempted to execute a command while the "
                     "cluster is down");
@@ -1292,26 +1292,28 @@ PUBLIC redisLua* scriptingInit() {
 
 /* Release resources related to Lua scripting.
  * This function is used in order to reset the scripting environment. */
-void scriptingRelease(redisLua *lua) {
-    dictRelease(lua->lua_scripts);
+void scriptingRelease(redisLua *lua, int async) {
+    if (async)
+        freeLuaScriptsAsync(lua->lua_scripts);
+    else
+        dictRelease(lua->lua_scripts);
     lua->lua_scripts_mem = 0;
     lua_close(lua->lua);
     zfree(lua);
 }
 
-void scriptingReset(redisLua *lua) {
-    int foundNone = 0;
+void scriptingReset(redisLua *lua, int async) {
+    listNode* luaNode = NULL;
     for (listNode* node = listFirst(server.luas) ; node ; node = listNextNode(node)){
         redisLua* l  = listNodeValue(node);
         if(l == lua){
-            listDelNode(server.luas, node);
-            foundNone = 1;
+            luaNode = node;
             break;
         }
     }
-    serverAssert(foundNone);
-    scriptingRelease(lua);
-    listAddNodeHead(server.luas, scriptingInit());
+    serverAssert(luaNode);
+    scriptingRelease(lua, async);
+    listNodeValue(luaNode) = scriptingInit();
 }
 
 /* Set an array of Redis String Objects as a Lua array (table) stored into a

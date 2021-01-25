@@ -174,15 +174,15 @@ sds ACLHashPassword(unsigned char *cleartext, size_t len) {
     return sdsnewlen(hex,HASH_PASSWORD_LEN);
 }
 
-/* Given a hash and the hash length, returns C_OK if it is a valid password 
+/* Given a hash and the hash length, returns C_OK if it is a valid password
  * hash, or C_ERR otherwise. */
 int ACLCheckPasswordHash(unsigned char *hash, int hashlen) {
     if (hashlen != HASH_PASSWORD_LEN) {
-        return C_ERR;      
+        return C_ERR;
     }
- 
+
     /* Password hashes can only be characters that represent
-     * hexadecimal values, which are numbers and lowercase 
+     * hexadecimal values, which are numbers and lowercase
      * characters 'a' through 'f'. */
     for(int i = 0; i < HASH_PASSWORD_LEN; i++) {
         char c = hash[i];
@@ -1024,8 +1024,8 @@ int ACLSetUser(user *u, const char *op, ssize_t oplen) {
 
 /* Return a description of the error that occurred in ACLSetUser() according to
  * the errno value set by the function on error. */
-char *ACLSetUserStringError(void) {
-    char *errmsg = "Wrong format";
+const char *ACLSetUserStringError(void) {
+    const char *errmsg = "Wrong format";
     if (errno == ENOENT)
         errmsg = "Unknown command or category name in ACL";
     else if (errno == EINVAL)
@@ -1454,7 +1454,7 @@ int ACLLoadConfiguredUsers(void) {
         /* Load every rule defined for this user. */
         for (int j = 1; aclrules[j]; j++) {
             if (ACLSetUser(u,aclrules[j],sdslen(aclrules[j])) != C_OK) {
-                char *errmsg = ACLSetUserStringError();
+                const char *errmsg = ACLSetUserStringError();
                 serverLog(LL_WARNING,"Error loading ACL rule '%s' for "
                                      "the user named '%s': %s",
                           aclrules[j],aclrules[0],errmsg);
@@ -1587,7 +1587,7 @@ sds ACLLoadFromFile(const char *filename) {
         for (j = 2; j < argc; j++) {
             argv[j] = sdstrim(argv[j],"\t\r\n");
             if (ACLSetUser(fakeuser,argv[j],sdslen(argv[j])) != C_OK) {
-                char *errmsg = ACLSetUserStringError();
+                const char *errmsg = ACLSetUserStringError();
                 errors = sdscatprintf(errors,
                          "%s:%d: %s. ",
                          server.acl_filename, linenum, errmsg);
@@ -1908,7 +1908,7 @@ void aclCommand(client *c) {
 
         for (int j = 3; j < c->argc; j++) {
             if (ACLSetUser(tempu,c->argv[j]->ptr,sdslen(c->argv[j]->ptr)) != C_OK) {
-                char *errmsg = ACLSetUserStringError();
+                const char *errmsg = ACLSetUserStringError();
                 addReplyErrorFormat(c,
                     "Error in ACL SETUSER modifier '%s': %s",
                     (char*)c->argv[j]->ptr, errmsg);
@@ -2184,18 +2184,30 @@ void aclCommand(client *c) {
         }
     } else if (c->argc == 2 && !strcasecmp(sub,"help")) {
         const char *help[] = {
-"LOAD                             -- Reload users from the ACL file.",
-"SAVE                             -- Save the current config to the ACL file.",
-"LIST                             -- Show user details in config file format.",
-"USERS                            -- List all the registered usernames.",
-"SETUSER <username> [attribs ...] -- Create or modify a user.",
-"GETUSER <username>               -- Get the user details.",
-"DELUSER <username> [...]         -- Delete a list of users.",
-"CAT                              -- List available categories.",
-"CAT <category>                   -- List commands inside category.",
-"GENPASS [<bits>]                 -- Generate a secure user password.",
-"WHOAMI                           -- Return the current connection username.",
-"LOG [<count> | RESET]            -- Show the ACL log entries.",
+"CAT [<category>]",
+"    List all commands that belong to <category>, or all command categories",
+"    when no category is specified.",
+"DELUSER <username> [<username> ...]",
+"    Delete a list of users.",
+"GETUSER <username>",
+"    Get the user's details.",
+"GENPASS [<bits>]",
+"    Generate a secure 256-bit user password. The optional `bits` argument can",
+"    be used to specify a different size.",
+"LIST",
+"    Show users details in config file format.",
+"LOAD",
+"    Reload users from the ACL file.",
+"LOG [<count> | RESET]",
+"    Show the ACL log entries.",
+"SAVE",
+"    Save the current config to the ACL file.",
+"SETUSER <username> <attribute> [<attribute> ...]",
+"    Create or modify a user with the specified attributes.",
+"USERS",
+"    List all the registered usernames.",
+"WHOAMI",
+"    Return the current connection username.",
 NULL
         };
         addReplyHelp(c,help);

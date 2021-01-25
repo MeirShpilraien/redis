@@ -350,6 +350,15 @@ start_server {tags {"scripting"}} {
             set e
         } {NOSCRIPT*}
 
+        test {SCRIPTING FLUSH ASYNC} {
+            for {set j 0} {$j < 100} {incr j} {
+                r script load "return $j"
+            }
+            assert { [string match "*number_of_cached_scripts:100*" [r info Memory]] }
+            r script flush async
+            assert { [string match "*number_of_cached_scripts:0*" [r info Memory]] }
+        }
+
         test {SCRIPT EXISTS - can detect already defined scripts?} {
             r eval "return 1+1" 0
             r script exists a27e7e8a43702b7046d4f6a7ccf5b60cef6b9bd9 a27e7e8a43702b7046d4f6a7ccf5b60cef6b9bda
@@ -557,7 +566,7 @@ start_server {tags {"scripting"}} {
                 } 0
             } {1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100}
         }
-
+        
         test {Number conversion precision test (issue #1118)} {
             r eval {
                   local value = 9007199254740991
@@ -598,6 +607,30 @@ start_server {tags {"scripting"}} {
             } e
             set e
         } {*wrong number*}
+
+        test {Script with RESP3 map} {
+            set expected_dict [dict create field value]
+            set expected_list [list field value]
+
+            # Sanity test for RESP3 without scripts
+            r HELLO 3
+            r hset hash field value
+            set res [r hgetall hash]
+            assert_equal $res $expected_dict
+
+            # Test RESP3 client with script in both RESP2 and RESP3 modes
+            set res [r eval {redis.setresp(3); return redis.call('hgetall', KEYS[1])} 1 hash]
+            assert_equal $res $expected_dict
+            set res [r eval {redis.setresp(2); return redis.call('hgetall', KEYS[1])} 1 hash]
+            assert_equal $res $expected_list
+
+            # Test RESP2 client with script in both RESP2 and RESP3 modes
+            r HELLO 2
+            set res [r eval {redis.setresp(3); return redis.call('hgetall', KEYS[1])} 1 hash]
+            assert_equal $res $expected_list
+            set res [r eval {redis.setresp(2); return redis.call('hgetall', KEYS[1])} 1 hash]
+            assert_equal $res $expected_list
+        }
     }
 }
 
@@ -657,11 +690,12 @@ foreach lua_version {504 501} {
 foreach lua_version {504 501} {
     foreach cmdrepl {0 1} {
         start_server {tags {"scripting repl"}} {
+
+            r config set default-lua-version $lua_version
+            puts [r config get default-lua-version]
+
+
             start_server {} {
-
-                r config set default-lua-version $lua_version
-                puts [r config get default-lua-version]
-
                 if {$cmdrepl == 1} {
                     set rt "(commands replication)"
                 } else {
@@ -875,8 +909,8 @@ foreach lua_version {504 501} {
     }
 }
 
-start_server {tags {"scripting"}} {
-    foreach lua_version {504 501} {
+foreach lua_version {504 501} {
+    start_server {tags {"scripting"}} {
 
         r config set default-lua-version $lua_version
         puts [r config get default-lua-version]
