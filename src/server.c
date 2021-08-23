@@ -3648,7 +3648,7 @@ void preventCommandReplication(client *c) {
 }
 
 /* Log the last command a client executed into the slowlog. */
-void slowlogPushCurrentCommand(client *c, struct redisCommand *cmd, ustime_t duration) {
+void slowlogPushCurrentCommand(client *c, struct redisCommand *cmd, ustime_t duration, long long system_duration, long long user_duration) {
     /* Some commands may contain sensitive data that should not be available in the slowlog. */
     if (cmd->flags & CMD_SKIP_SLOWLOG)
         return;
@@ -3657,7 +3657,7 @@ void slowlogPushCurrentCommand(client *c, struct redisCommand *cmd, ustime_t dur
      * arguments. */
     robj **argv = c->original_argv ? c->original_argv : c->argv;
     int argc = c->original_argv ? c->original_argc : c->argc;
-    slowlogPushEntryIfNeeded(c,argv,argc,duration);
+    slowlogPushEntryIfNeeded(c,argv,argc,duration, system_duration, user_duration);
 }
 
 /* Call() is the core of Redis execution of a command.
@@ -3720,9 +3720,29 @@ void call(client *c, int flags) {
         updateCachedTime(0);
     }
 
+    struct rusage self_ru_start, self_ru_end;
+#ifdef __USE_GNU
+    getrusage(RUSAGE_THREAD, &self_ru_start);
+#else
+    getrusage(RUSAGE_SELF, &self_ru_start);
+#endif
+
     elapsedStart(&call_timer);
     c->cmd->proc(c);
     const long duration = elapsedUs(call_timer);
+
+#ifdef __USE_GNU
+    getrusage(RUSAGE_THREAD, &self_ru_end);
+#else
+    getrusage(RUSAGE_SELF, &self_ru_end);
+#endif
+
+    long long system_time = (self_ru_end.ru_stime.tv_sec * 1000000 + self_ru_end.ru_stime.tv_usec) -
+            (self_ru_start.ru_stime.tv_sec * 1000000 + self_ru_start.ru_stime.tv_usec);
+
+    long long user_time = (self_ru_end.ru_utime.tv_sec * 1000000 + self_ru_end.ru_utime.tv_usec) -
+                (self_ru_start.ru_utime.tv_sec * 1000000 + self_ru_start.ru_utime.tv_usec);
+
     c->duration = duration;
     dirty = server.dirty-dirty;
     if (dirty < 0) dirty = 0;
@@ -3773,7 +3793,7 @@ void call(client *c, int flags) {
     /* Log the command into the Slow log if needed.
      * If the client is blocked we will handle slowlog when it is unblocked. */
     if ((flags & CMD_CALL_SLOWLOG) && !(c->flags & CLIENT_BLOCKED))
-        slowlogPushCurrentCommand(c, real_cmd, duration);
+        slowlogPushCurrentCommand(c, real_cmd, duration, system_time, user_time);
 
     /* Send the command to clients in MONITOR mode if applicable.
      * Administrative commands are considered too dangerous to be shown. */

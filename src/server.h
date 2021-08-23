@@ -2274,7 +2274,7 @@ void forceCommandPropagation(client *c, int flags);
 void preventCommandPropagation(client *c);
 void preventCommandAOF(client *c);
 void preventCommandReplication(client *c);
-void slowlogPushCurrentCommand(client *c, struct redisCommand *cmd, ustime_t duration);
+void slowlogPushCurrentCommand(client *c, struct redisCommand *cmd, ustime_t duration, long long system_duration, long long user_duration);
 int prepareForShutdown(int flags);
 #ifdef __GNUC__
 void _serverLog(int level, const char *fmt, ...)
@@ -2494,7 +2494,7 @@ void disconnectAllBlockedClients(void);
 void handleClientsBlockedOnKeys(void);
 void signalKeyAsReady(redisDb *db, robj *key, int type);
 void blockForKeys(client *c, int btype, robj **keys, int numkeys, mstime_t timeout, robj *target, struct listPos *listpos, streamID *ids);
-void updateStatsOnUnblock(client *c, long blocked_us, long reply_us);
+void updateStatsOnUnblock(client *c, long blocked_us, long sys_time, long user_time, long reply_us);
 
 /* timeout.c -- Blocked clients timeout and connections timeout. */
 void addClientToTimeoutTable(client *c);

@@ -45,7 +45,7 @@
 /* Create a new slowlog entry.
  * Incrementing the ref count of all the objects retained is up to
  * this function. */
-slowlogEntry *slowlogCreateEntry(client *c, robj **argv, int argc, long long duration) {
+slowlogEntry *slowlogCreateEntry(client *c, robj **argv, int argc, long long duration, long long system_duration, long long user_duration) {
     slowlogEntry *se = zmalloc(sizeof(*se));
     int j, slargc = argc;
 
@@ -86,6 +86,8 @@ slowlogEntry *slowlogCreateEntry(client *c, robj **argv, int argc, long long dur
         }
     }
     se->time = time(NULL);
+    se->system_time = system_duration;
+    se->user_time = user_duration;
     se->duration = duration;
     se->id = server.slowlog_entry_id++;
     se->peerid = sdsnew(getClientPeerId(c));
@@ -120,11 +122,11 @@ void slowlogInit(void) {
 /* Push a new entry into the slow log.
  * This function will make sure to trim the slow log accordingly to the
  * configured max length. */
-void slowlogPushEntryIfNeeded(client *c, robj **argv, int argc, long long duration) {
+void slowlogPushEntryIfNeeded(client *c, robj **argv, int argc, long long duration, long long system_duration, long long user_duration) {
     if (server.slowlog_log_slower_than < 0) return; /* Slowlog disabled */
     if (duration >= server.slowlog_log_slower_than)
         listAddNodeHead(server.slowlog,
-                        slowlogCreateEntry(c,argv,argc,duration));
+                        slowlogCreateEntry(c,argv,argc,duration, system_duration, user_duration));
 
     /* Remove old entries if needed. */
     while (listLength(server.slowlog) > server.slowlog_max_len)
@@ -187,10 +189,12 @@ NULL
             int j;
 
             se = ln->value;
-            addReplyArrayLen(c,6);
+            addReplyArrayLen(c,8);
             addReplyLongLong(c,se->id);
             addReplyLongLong(c,se->time);
             addReplyLongLong(c,se->duration);
+            addReplyLongLong(c,se->system_time);
+            addReplyLongLong(c,se->user_time);
             addReplyArrayLen(c,se->argc);
             for (j = 0; j < se->argc; j++)
                 addReplyBulk(c,se->argv[j]);

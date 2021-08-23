@@ -60,6 +60,7 @@
 #include <dlfcn.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/resource.h>
 
 /* --------------------------------------------------------------------------
  * Private data structures used by the modules system. Those are data
@@ -161,6 +162,8 @@ struct RedisModuleCtx {
                                       we reallocate the "also propagate" op
                                       array. Here we save the old one to
                                       restore it later. */
+    monotime command_start_time;   /* time we started the command execution
+                                      used only for blocked client */
 };
 typedef struct RedisModuleCtx RedisModuleCtx;
 
@@ -253,9 +256,14 @@ typedef struct RedisModuleBlockedClient {
     int dbid;           /* Database number selected by the original client. */
     int blocked_on_keys;    /* If blocked via RM_BlockClientOnKeys(). */
     int unblocked;          /* Already on the moduleUnblocked list. */
-    monotime background_timer; /* Timer tracking the start of background work */
-    uint64_t background_duration; /* Current command background time duration.
-                                     Used for measuring latency of blocking cmds */
+    int background_timer_set;
+    struct timeval background_timer_user; /* Timer tracking the start of background work */
+    struct timeval background_timer_system; /* Timer tracking the start of background work */
+    uint64_t background_duration_user; /* Current command background time duration.
+                                          Used for measuring latency of blocking cmds */
+    uint64_t background_duration_system; /* Current command background time duration.
+                                             Used for measuring latency of blocking cmds */
+    monotime command_start_time;  /* time we started the command execution */
 } RedisModuleBlockedClient;
 
 static pthread_mutex_t moduleUnblockedClientsMutex = PTHREAD_MUTEX_INITIALIZER;
@@ -665,6 +673,7 @@ void RedisModuleCommandDispatcher(client *c) {
     ctx.flags |= REDISMODULE_CTX_MODULE_COMMAND_CALL;
     ctx.module = cp->module;
     ctx.client = c;
+    elapsedStart(&ctx.command_start_time);
     cp->func(&ctx,(void**)c->argv,c->argc);
     moduleFreeContext(&ctx);
 
@@ -961,7 +970,15 @@ long long RM_Milliseconds(void) {
  * to accumulate independent time intervals to the background duration.
  * This method always return REDISMODULE_OK. */
 int RM_BlockedClientMeasureTimeStart(RedisModuleBlockedClient *bc) {
-    elapsedStart(&(bc->background_timer));
+    struct rusage self_ru;
+#ifdef __USE_GNU
+    getrusage(RUSAGE_THREAD, &self_ru);
+#else
+    getrusage(RUSAGE_SELF, &self_ru);
+#endif
+    bc->background_timer_user = self_ru.ru_utime;
+    bc->background_timer_system = self_ru.ru_stime;
+    bc->background_timer_set = 1;
     return REDISMODULE_OK;
 }
 
@@ -972,9 +989,21 @@ int RM_BlockedClientMeasureTimeStart(RedisModuleBlockedClient *bc) {
  * previously defined ( meaning RM_BlockedClientMeasureTimeStart was not called ). */
 int RM_BlockedClientMeasureTimeEnd(RedisModuleBlockedClient *bc) {
     // If the counter is 0 then we haven't called RM_BlockedClientMeasureTimeStart
-    if (!bc->background_timer)
+    if (!bc->background_timer_set)
         return REDISMODULE_ERR;
-    bc->background_duration += elapsedUs(bc->background_timer);
+
+    struct rusage self_ru;
+    #ifdef __USE_GNU
+        getrusage(RUSAGE_THREAD, &self_ru);
+    #else
+        getrusage(RUSAGE_SELF, &self_ru);
+    #endif
+
+    bc->background_duration_user += (self_ru.ru_utime.tv_sec * 1000000 + self_ru.ru_utime.tv_usec) -
+            (bc->background_timer_user.tv_sec * 1000000 + bc->background_timer_user.tv_usec);
+
+    bc->background_duration_system += (self_ru.ru_stime.tv_sec * 1000000 + self_ru.ru_stime.tv_usec) -
+                (bc->background_timer_system.tv_sec * 1000000 + bc->background_timer_system.tv_usec);
     return REDISMODULE_OK;
 }
 
@@ -5493,8 +5522,10 @@ RedisModuleBlockedClient *moduleBlockClient(RedisModuleCtx *ctx, RedisModuleCmdF
     bc->dbid = c->db->id;
     bc->blocked_on_keys = keys != NULL;
     bc->unblocked = 0;
-    bc->background_timer = 0;
-    bc->background_duration = 0;
+    bc->background_timer_set = 0;
+    bc->background_duration_user = 0;
+    bc->background_duration_system = 0;
+    bc->command_start_time = ctx->command_start_time;
     c->bpop.timeout = timeout;
 
     if (islua || ismulti) {
@@ -5793,7 +5824,7 @@ void moduleHandleBlockedClients(void) {
          * module might not define any callback and still do blocking ops.
          */
         if (c && !bc->blocked_on_keys) {
-            updateStatsOnUnblock(c, bc->background_duration, reply_us);
+            updateStatsOnUnblock(c, elapsedUs(bc->command_start_time), bc->background_duration_system, bc->background_duration_user, reply_us);
         }
 
         /* Free privdata if any. */
@@ -5876,7 +5907,7 @@ void moduleBlockedClientTimedOut(client *c) {
     bc->timeout_callback(&ctx,(void**)c->argv,c->argc);
     moduleFreeContext(&ctx);
     if (!bc->blocked_on_keys) {
-        updateStatsOnUnblock(c, bc->background_duration, 0);
+        updateStatsOnUnblock(c, elapsedUs(bc->command_start_time), bc->background_duration_system, bc->background_duration_user, 0);
     }
     /* For timeout events, we do not want to call the disconnect callback,
      * because the blocked client will be automatically disconnected in

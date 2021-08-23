@@ -103,12 +103,12 @@ void blockClient(client *c, int btype) {
 /* This function is called after a client has finished a blocking operation
  * in order to update the total command duration, log the command into
  * the Slow log if needed, and log the reply duration event if needed. */
-void updateStatsOnUnblock(client *c, long blocked_us, long reply_us){
+void updateStatsOnUnblock(client *c, long blocked_us, long sys_time, long user_time, long reply_us){
     const ustime_t total_cmd_duration = c->duration + blocked_us + reply_us;
     c->lastcmd->microseconds += total_cmd_duration;
 
     /* Log the command into the Slow log if needed. */
-    slowlogPushCurrentCommand(c, c->lastcmd, total_cmd_duration);
+    slowlogPushCurrentCommand(c, c->lastcmd, total_cmd_duration, sys_time, user_time);
     /* Log the reply duration event. */
     latencyAddSampleIfNeeded("command-unblocking",reply_us/1000);
 }
@@ -299,7 +299,7 @@ void serveClientsBlockedOnListKey(robj *o, readyList *rl) {
                      * to also undo the POP operation. */
                     listTypePush(o,value,wherefrom);
                 }
-                updateStatsOnUnblock(receiver, 0, elapsedUs(replyTimer));
+                updateStatsOnUnblock(receiver, 0, 0, 0, elapsedUs(replyTimer));
                 unblockClient(receiver);
 
                 if (dstkey) decrRefCount(dstkey);
@@ -347,7 +347,7 @@ void serveClientsBlockedOnSortedSetKey(robj *o, readyList *rl) {
             monotime replyTimer;
             elapsedStart(&replyTimer);
             genericZpopCommand(receiver,&rl->key,1,where,1,NULL);
-            updateStatsOnUnblock(receiver, 0, elapsedUs(replyTimer));
+            updateStatsOnUnblock(receiver, 0, 0, 0, elapsedUs(replyTimer));
             unblockClient(receiver);
             zcard--;
 
@@ -459,7 +459,7 @@ void serveClientsBlockedOnStreamKey(robj *o, readyList *rl) {
                 streamReplyWithRange(receiver,s,&start,NULL,
                                      receiver->bpop.xread_count,
                                      0, group, consumer, noack, &pi);
-                updateStatsOnUnblock(receiver, 0, elapsedUs(replyTimer));
+                updateStatsOnUnblock(receiver, 0, 0, 0, elapsedUs(replyTimer));
 
                 /* Note that after we unblock the client, 'gt'
                  * and other receiver->bpop stuff are no longer
@@ -513,7 +513,7 @@ void serveClientsBlockedOnKeyByModule(readyList *rl) {
             monotime replyTimer;
             elapsedStart(&replyTimer);
             if (!moduleTryServeClientBlockedOnKey(receiver, rl->key)) continue;
-            updateStatsOnUnblock(receiver, 0, elapsedUs(replyTimer));
+            updateStatsOnUnblock(receiver, 0, 0, 0, elapsedUs(replyTimer));
 
             moduleUnblockClient(receiver);
         }
