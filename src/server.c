@@ -690,6 +690,12 @@ struct redisCommand redisCommandTable[] = {
        KSPEC_BS_INDEX,.bs.index={1},
        KSPEC_FK_RANGE,.fk.range={0,1,0}}}},
 
+   {"dummy",dummyCommand,-1,
+	"read-only fast @string",
+	{{"read",
+	  KSPEC_BS_INDEX,.bs.index={1},
+	  KSPEC_FK_RANGE,.fk.range={0,1,0}}}},
+
     {"getex",getexCommand,-2,
      "write fast @string",
      {{"write",

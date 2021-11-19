@@ -1947,6 +1947,19 @@ void evalGenericCommand(client *c, int evalsha) {
     }
 }
 
+static void dummyInternal(client *c, int nesting){
+	if (nesting == 0) {
+		addReplyBulkCBuffer(c,"test", 4);
+		return;
+	}
+	addReplyArrayLen(c, 1);
+	dummyInternal(c, nesting - 1);
+}
+
+void dummyCommand(client *c) {
+	dummyInternal(c, 24);
+}
+
 void evalCommand(client *c) {
     /* Explicitly feed monitor here so that lua commands appear after their
      * script command. */
