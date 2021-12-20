@@ -94,7 +94,7 @@ typedef struct functionInfo {
     sds name;        /* Function name */
     void *function;  /* Opaque object that set by the function's engine and allow it
                         to run the function, usually it's the function compiled code. */
-    libraryInfo* li; /* Pointer to the library created the fucntion */
+    libraryInfo* li; /* Pointer to the library created the function */
     sds desc;        /* Function description */
 } functionInfo;
 

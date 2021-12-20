@@ -121,7 +121,7 @@ static void engineLibraryFree(libraryInfo* li) {
 
 /* Clear all the functions from the given functions ctx */
 void librariesCtxClear(librariesCtx *lib_ctx) {
-    dictEmpty(curr_lib_ctx->functions, NULL);
+    dictEmpty(lib_ctx->functions, NULL);
     dictIterator *iter = dictGetIterator(lib_ctx->libraries);
     dictEntry *entry = NULL;
     while ((entry = dictNext(iter))) {
@@ -129,8 +129,8 @@ void librariesCtxClear(librariesCtx *lib_ctx) {
         engineLibraryFree(li);
     }
     dictReleaseIterator(iter);
-    dictEmpty(curr_lib_ctx->libraries, NULL);
-    curr_lib_ctx->cache_memory = 0;
+    dictEmpty(lib_ctx->libraries, NULL);
+    lib_ctx->cache_memory = 0;
 }
 
 /* Free the given functions ctx */
