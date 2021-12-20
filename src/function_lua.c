@@ -48,6 +48,7 @@
 #define LUA_ENGINE_NAME "LUA"
 #define REGISTRY_ENGINE_CTX_NAME "__ENGINE_CTX__"
 #define REGISTRY_ERROR_HANDLER_NAME "__ERROR_HANDLER__"
+#define REGISTRY_LIBRARY_CTX_NAME "__LIBRARY_CTX__"
 
 /* Lua engine ctx */
 typedef struct luaEngineCtx {
@@ -67,25 +68,25 @@ typedef struct luaFunctionCtx {
  *
  * Return NULL on compilation error and set the error to the err variable
  */
-static void* luaEngineCreate(void *engine_ctx, sds blob, sds *err) {
+static int luaEngineCreate(void *engine_ctx, libraryInfo *li, sds blob, sds *err) {
     luaEngineCtx *lua_engine_ctx = engine_ctx;
     lua_State *lua = lua_engine_ctx->lua;
     if (luaL_loadbuffer(lua, blob, sdslen(blob), "@user_function")) {
-        *err = sdsempty();
-        *err = sdscatprintf(*err, "Error compiling function: %s",
-                lua_tostring(lua, -1));
+        *err = sdscatprintf(sdsempty(), "Error compiling function: %s", lua_tostring(lua, -1));
         lua_pop(lua, 1);
-        return NULL;
+        return C_ERR;
     }
-
     serverAssert(lua_isfunction(lua, -1));
 
-    int lua_function_ref = luaL_ref(lua, LUA_REGISTRYINDEX);
+    luaSaveOnRegistry(lua, REGISTRY_LIBRARY_CTX_NAME, li);
+    /* Run the compiled code to allow it to register functions */
+    if (lua_pcall(lua,0,0,0)) {
+        *err = sdscatprintf(sdsempty(), "Error registering functions: %s", lua_tostring(lua, -1));
+        lua_pop(lua, 1);
+        return C_ERR;
+    }
 
-    luaFunctionCtx *f_ctx = zmalloc(sizeof(*f_ctx));
-    *f_ctx = (luaFunctionCtx ) { .lua_function_ref = lua_function_ref, };
-
-    return f_ctx;
+    return C_OK;
 }
 
 /*
@@ -137,12 +138,58 @@ static void luaEngineFreeFunction(void *engine_ctx, void *compiled_function) {
     zfree(f_ctx);
 }
 
+static int luaRegisterFunction(lua_State *lua) {
+    int argc = lua_gettop(lua);
+    if (argc != 2) {
+        luaPushError(lua, "wrong number of arguments to redis.register_function");
+        return luaRaiseError(lua);
+    }
+    libraryInfo *li = luaGetFromRegistry(lua, REGISTRY_LIBRARY_CTX_NAME);
+    if (!li) {
+        luaPushError(lua, "redis.register_function can only be called on FUNCTION LOAD command");
+        return luaRaiseError(lua);
+    }
+
+    if (!lua_isstring(lua, 1)) {
+        luaPushError(lua, "first argument to redis.register_function must be a string");
+        return luaRaiseError(lua);
+    }
+
+    const char* function_name = lua_tostring(lua, 1);
+
+    if (!lua_isfunction(lua, 2)) {
+        luaPushError(lua, "second argument to redis.register_function must be a function");
+        return luaRaiseError(lua);
+    }
+
+    int lua_function_ref = luaL_ref(lua, LUA_REGISTRYINDEX);
+
+    luaFunctionCtx *lua_f_ctx = zmalloc(sizeof(*lua_f_ctx));
+    *lua_f_ctx = (luaFunctionCtx ) { .lua_function_ref = lua_function_ref, };
+
+    sds err = NULL;
+    if (libraryCreateFunction(function_name, lua_f_ctx, li, NULL, &err) != C_OK) {
+        luaPushError(lua, err);
+        sdsfree(err);
+        return luaRaiseError(lua);
+    }
+
+    return 0;
+}
+
 /* Initialize Lua engine, should be called once on start. */
 int luaEngineInitEngine() {
     luaEngineCtx *lua_engine_ctx = zmalloc(sizeof(*lua_engine_ctx));
     lua_engine_ctx->lua = lua_open();
 
     luaRegisterRedisAPI(lua_engine_ctx->lua);
+
+    lua_getglobal(lua_engine_ctx->lua,"redis");
+
+    /* redis.register_function */
+    lua_pushstring(lua_engine_ctx->lua,"register_function");
+    lua_pushcfunction(lua_engine_ctx->lua,luaRegisterFunction);
+    lua_settable(lua_engine_ctx->lua,-3);
 
     /* Save error handler to registry */
     lua_pushstring(lua_engine_ctx->lua, REGISTRY_ERROR_HANDLER_NAME);

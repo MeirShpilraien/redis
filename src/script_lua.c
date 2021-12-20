@@ -427,7 +427,7 @@ static void redisProtocolToLuaType_Double(void *ctx, double d, const char *proto
  * with a single "err" field set to the error string. Note that this
  * table is never a valid reply by proper commands, since the returned
  * tables are otherwise always indexed by integers, never by strings. */
-static void luaPushError(lua_State *lua, char *error) {
+void luaPushError(lua_State *lua, char *error) {
     lua_Debug dbg;
 
     /* If debugging is active and in step mode, log errors resulting from
@@ -455,7 +455,7 @@ static void luaPushError(lua_State *lua, char *error) {
  * by the non-error-trapping version of redis.pcall(), which is redis.call(),
  * this function will raise the Lua error so that the execution of the
  * script will be halted. */
-static int luaRaiseError(lua_State *lua) {
+int luaRaiseError(lua_State *lua) {
     lua_pushstring(lua,"err");
     lua_gettable(lua,-2);
     return lua_error(lua);

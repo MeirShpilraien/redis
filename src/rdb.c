@@ -1241,21 +1241,21 @@ int rdbSaveRio(rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     if (rdbSaveModulesAux(rdb, REDISMODULE_AUX_BEFORE_RDB) == -1) goto werr;
 
     /* save functions */
-    dict *functions = functionsGet();
-    dictIterator *iter = dictGetIterator(functions);
+    dict *libraries = librariesGet();
+    dictIterator *iter = dictGetIterator(libraries);
     dictEntry *entry = NULL;
     while ((entry = dictNext(iter))) {
         rdbSaveType(rdb, RDB_OPCODE_FUNCTION);
-        functionInfo* fi = dictGetVal(entry);
-        if (rdbSaveRawString(rdb, (unsigned char *) fi->name, sdslen(fi->name)) == -1) goto werr;
-        if (rdbSaveRawString(rdb, (unsigned char *) fi->ei->name, sdslen(fi->ei->name)) == -1) goto werr;
-        if (fi->desc) {
+        libraryInfo* li = dictGetVal(entry);
+        if (rdbSaveRawString(rdb, (unsigned char *) li->name, sdslen(li->name)) == -1) goto werr;
+        if (rdbSaveRawString(rdb, (unsigned char *) li->ei->name, sdslen(li->ei->name)) == -1) goto werr;
+        if (li->desc) {
             if (rdbSaveLen(rdb, 1) == -1) goto werr; /* desc exists */
-            if (rdbSaveRawString(rdb, (unsigned char *) fi->desc, sdslen(fi->desc)) == -1) goto werr;
+            if (rdbSaveRawString(rdb, (unsigned char *) li->desc, sdslen(li->desc)) == -1) goto werr;
         } else {
             if (rdbSaveLen(rdb, 0) == -1) goto werr; /* desc not exists */
         }
-        if (rdbSaveRawString(rdb, (unsigned char *) fi->code, sdslen(fi->code)) == -1) goto werr;
+        if (rdbSaveRawString(rdb, (unsigned char *) li->code, sdslen(li->code)) == -1) goto werr;
     }
     dictReleaseIterator(iter);
 
@@ -2712,7 +2712,7 @@ void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
     }
 }
 
-static int rdbFunctionLoad(rio *rdb, int ver, functionsCtx* functions_ctx) {
+static int rdbFunctionLoad(rio *rdb, int ver, librariesCtx* lib_ctx) {
     UNUSED(ver);
     sds name = NULL;
     sds engine_name = NULL;
@@ -2722,7 +2722,7 @@ static int rdbFunctionLoad(rio *rdb, int ver, functionsCtx* functions_ctx) {
     uint64_t has_desc;
     int res = C_ERR;
     if (!(name = rdbGenericLoadStringObject(rdb, RDB_LOAD_SDS, NULL))) {
-        serverLog(LL_WARNING, "Failed loading function name");
+        serverLog(LL_WARNING, "Failed loading library name");
         goto error;
     }
 
@@ -2732,22 +2732,22 @@ static int rdbFunctionLoad(rio *rdb, int ver, functionsCtx* functions_ctx) {
     }
 
     if ((has_desc = rdbLoadLen(rdb, NULL)) == RDB_LENERR) {
-        serverLog(LL_WARNING, "Failed loading function desc indicator");
+        serverLog(LL_WARNING, "Failed loading library description indicator");
         goto error;
     }
 
     if (has_desc && !(desc = rdbGenericLoadStringObject(rdb, RDB_LOAD_SDS, NULL))) {
-        serverLog(LL_WARNING, "Failed loading function desc");
+        serverLog(LL_WARNING, "Failed loading library description");
         goto error;
     }
 
     if (!(blob = rdbGenericLoadStringObject(rdb, RDB_LOAD_SDS, NULL))) {
-        serverLog(LL_WARNING, "Failed loading function blob");
+        serverLog(LL_WARNING, "Failed loading library blob");
         goto error;
     }
 
-    if (functionsCreateWithFunctionCtx(name, engine_name, desc, blob, 0, &err, functions_ctx) != C_OK) {
-        serverLog(LL_WARNING, "Failed compiling and saving the function %s", err);
+    if (functionsCreateWithLibraryCtx(name, engine_name, desc, blob, 0, &err, lib_ctx) != C_OK) {
+        serverLog(LL_WARNING, "Failed compiling and saving the library %s", err);
         goto error;
     }
 
@@ -2765,13 +2765,13 @@ error:
 /* Load an RDB file from the rio stream 'rdb'. On success C_OK is returned,
  * otherwise C_ERR is returned and 'errno' is set accordingly. */
 int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
-    functionsCtx* functions_ctx = functionsCtxGetCurrent();
-    functionsCtxClear(functions_ctx);
-    rdbLoadingCtx loading_ctx = { .dbarray = server.db, .functions_ctx = functions_ctx };
+    librariesCtx* lib_ctx = librariesCtxGetCurrent();
+    librariesCtxClear(lib_ctx);
+    rdbLoadingCtx loading_ctx = { .dbarray = server.db, .lib_ctx = lib_ctx };
     int retval = rdbLoadRioWithLoadingCtx(rdb,rdbflags,rsi,&loading_ctx);
     if (retval != C_OK) {
         /* Loading failed, clear the function ctx */
-        functionsCtxClear(functions_ctx);
+        librariesCtxClear(lib_ctx);
     }
     return retval;
 }
@@ -2989,7 +2989,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
                 continue; /* Read next opcode. */
             }
         } else if (type == RDB_OPCODE_FUNCTION) {
-            if (rdbFunctionLoad(rdb, rdbver, rdb_loading_ctx->functions_ctx) != C_OK) {
+            if (rdbFunctionLoad(rdb, rdbver, rdb_loading_ctx->lib_ctx) != C_OK) {
                 serverLog(LL_WARNING,"Failed loading function");
                 goto eoferr;
             }

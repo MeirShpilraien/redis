@@ -1,32 +1,36 @@
+proc get_function_code {args} {
+    return [format "redis.register_function('test', function()\n %s \nend)" [lindex $args 0]]
+}
+
 start_server {tags {"scripting"}} {
     test {FUNCTION - Basic usage} {
-        r function create LUA test {return 'hello'}
+        r function load LUA test [get_function_code {return 'hello'}]
         r fcall test 0
     } {hello}
 
     test {FUNCTION - Create an already exiting function raise error} {
         catch {
-            r function create LUA test {return 'hello1'}
+            r function load LUA test [get_function_code {return 'hello1'}]
         } e
         set _ $e
-    } {*Function already exists*}
+    } {*Library already exists*}
 
     test {FUNCTION - Create function with unexisting engine} {
         catch {
-            r function create bad_engine test {return 'hello1'}
+            r function load bad_engine test [get_function_code {return 'hello1'}]
         } e
         set _ $e
     } {*Engine not found*}
 
     test {FUNCTION - Test uncompiled script} {
         catch {
-            r function create LUA test1 {bad script}
+            r function load LUA test1 {bad script}
         } e
         set _ $e
     } {*Error compiling function*}
 
     test {FUNCTION - test replace argument} {
-        r function create LUA test REPLACE {return 'hello1'}
+        r function load LUA test REPLACE [get_function_code {return 'hello1'}]
         r fcall test 0
     } {hello1}
 
@@ -44,13 +48,14 @@ start_server {tags {"scripting"}} {
     } {*Function not found*}
 
     test {FUNCTION - test description argument} {
-        r function create LUA test DESCRIPTION {some description} {return 'hello'}
+        r function load LUA test DESCRIPTION {some description} [get_function_code {return 'hello'}]
         r function list
-    } {{name test engine LUA description {some description}}}
+    } {{library_name test engine LUA description {some description} functions {{name test description {}}}}}
 
-    test {FUNCTION - test info specific function} {
-        r function info test WITHCODE
-    } {name test engine LUA description {some description} code {return 'hello'}}
+    # irelevant as we are going to remove function info
+    # test {FUNCTION - test info specific function} {
+    #     r function info test WITHCODE
+    # } {name test engine LUA description {some description} code {return 'hello'}}
 
     test {FUNCTION - test info without code} {
         r function info test
@@ -118,19 +123,19 @@ start_server {tags {"scripting"}} {
     } {hello} {needs:debug}
 
     test {FUNCTION - test fcall_ro with write command} {
-        r function create lua test REPLACE {return redis.call('set', 'x', '1')}
+        r function load lua test REPLACE [get_function_code {return redis.call('set', 'x', '1')}]
         catch { r fcall_ro test 0 } e
         set _ $e
     } {*Write commands are not allowed from read-only scripts*}
 
     test {FUNCTION - test fcall_ro with read only commands} {
-        r function create lua test REPLACE {return redis.call('get', 'x')}
+        r function load lua test REPLACE [get_function_code {return redis.call('get', 'x')}]
         r set x 1
         r fcall_ro test 0
     } {1}
 
     test {FUNCTION - test keys and argv} {
-        r function create lua test REPLACE {return redis.call('set', KEYS[1], ARGV[1])}
+        r function load lua test REPLACE [get_function_code {return redis.call('set', KEYS[1], ARGV[1])}]
         r fcall test 1 x foo
         r get x
     } {foo}
@@ -146,7 +151,7 @@ start_server {tags {"scripting"}} {
     test {FUNCTION - test function kill} {
         set rd [redis_deferring_client]
         r config set script-time-limit 10
-        r function create lua test REPLACE {local a = 1 while true do a = a + 1 end}
+        r function load lua test REPLACE [get_function_code {local a = 1 while true do a = a + 1 end}]
         $rd fcall test 0
         after 200
         catch {r ping} e
@@ -160,7 +165,7 @@ start_server {tags {"scripting"}} {
     test {FUNCTION - test script kill not working on function} {
         set rd [redis_deferring_client]
         r config set script-time-limit 10
-        r function create lua test REPLACE {local a = 1 while true do a = a + 1 end}
+        r function load lua test REPLACE [get_function_code {local a = 1 while true do a = a + 1 end}]
         $rd fcall test 0
         after 200
         catch {r ping} e
@@ -187,18 +192,18 @@ start_server {tags {"scripting"}} {
     }
 
     test {FUNCTION - test function flush} {
-        r function create lua test REPLACE {local a = 1 while true do a = a + 1 end}
-        assert_match {{name test engine LUA description {}}} [r function list]
+        r function load lua test REPLACE [get_function_code {local a = 1 while true do a = a + 1 end}]
+        assert_match {{library_name test engine LUA description {} functions {{name test description {}}}}} [r function list]
         r function flush
         assert_match {} [r function list]
 
-        r function create lua test REPLACE {local a = 1 while true do a = a + 1 end}
-        assert_match {{name test engine LUA description {}}} [r function list]
+        r function load lua test REPLACE [get_function_code {local a = 1 while true do a = a + 1 end}]
+        assert_match {{library_name test engine LUA description {} functions {{name test description {}}}}} [r function list]
         r function flush async
         assert_match {} [r function list]
 
-        r function create lua test REPLACE {local a = 1 while true do a = a + 1 end}
-        assert_match {{name test engine LUA description {}}} [r function list]
+        r function load lua test REPLACE [get_function_code {local a = 1 while true do a = a + 1 end}]
+        assert_match {{library_name test engine LUA description {} functions {{name test description {}}}}} [r function list]
         r function flush sync
         assert_match {} [r function list]
     }
@@ -225,9 +230,9 @@ start_server {tags {"scripting repl external:skip"}} {
         }
 
         test {FUNCTION - creation is replicated to replica} {
-            r function create LUA test DESCRIPTION {some description} {return 'hello'}
+            r function load LUA test DESCRIPTION {some description} [get_function_code {return 'hello'}]
             wait_for_condition 50 100 {
-                [r -1 function list] eq {{name test engine LUA description {some description}}}
+                [r -1 function list] eq {{library_name test engine LUA description {some description} functions {{name test description {}}}}}
             } else {
                 fail "Failed waiting for function to replicate to replica"
             }
@@ -247,9 +252,9 @@ start_server {tags {"scripting repl external:skip"}} {
         }
 
         test {FUNCTION - flush is replicated to replica} {
-            r function create LUA test DESCRIPTION {some description} {return 'hello'}
+            r function load LUA test DESCRIPTION {some description} [get_function_code {return 'hello'}]
             wait_for_condition 50 100 {
-                [r -1 function list] eq {{name test engine LUA description {some description}}}
+                [r -1 function list] eq {{library_name test engine LUA description {some description} functions {{name test description {}}}}}
             } else {
                 fail "Failed waiting for function to replicate to replica"
             }
@@ -265,7 +270,7 @@ start_server {tags {"scripting repl external:skip"}} {
             r -1 slaveof no one
             # creating a function after disconnect to make sure function
             # is replicated on rdb phase
-            r function create LUA test DESCRIPTION {some description} {return 'hello'}
+            r function load LUA test DESCRIPTION {some description} [get_function_code {return 'hello'}]
 
             # reconnect the replica
             r -1 slaveof [srv 0 host] [srv 0 port]
@@ -282,12 +287,12 @@ start_server {tags {"scripting repl external:skip"}} {
         } {hello}
 
         test "FUNCTION - test replication to replica on rdb phase info command" {
-            r -1 function info test WITHCODE
-        } {name test engine LUA description {some description} code {return 'hello'}}
+            r -1 function list
+        } {{library_name test engine LUA description {some description} functions {{name test description {}}}}}
 
         test "FUNCTION - create on read only replica" {
             catch {
-                r -1 function create LUA test DESCRIPTION {some description} {return 'hello'}
+                r -1 function load LUA test DESCRIPTION {some description} [get_function_code {return 'hello'}]
             } e
             set _ $e
         } {*Can not create a function on a read only replica*}
@@ -300,7 +305,7 @@ start_server {tags {"scripting repl external:skip"}} {
         } {*Can not delete a function on a read only replica*}
 
         test "FUNCTION - function effect is replicated to replica" {
-            r function create LUA test REPLACE {return redis.call('set', 'x', '1')}
+            r function load LUA test REPLACE [get_function_code {return redis.call('set', 'x', '1')}]
             r fcall test 0
             assert {[r get x] eq {1}}
             wait_for_condition 50 100 {
